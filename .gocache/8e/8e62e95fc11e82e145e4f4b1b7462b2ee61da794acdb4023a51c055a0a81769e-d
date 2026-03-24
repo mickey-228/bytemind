@@ -1,0 +1,7 @@
+# test log
+open C:\Users\ASUS\AppData\Local\Temp\TestLoadSupportsUTF8BOM1639102380\001\forgecli.json
+open C:\Users\ASUS\AppData\Local\Temp\TestLoadSupportsUTF8BOM1639102380\001\forgecli.json
+stat C:\Users\ASUS\AppData\Local\Temp\TestLoadSupportsUTF8BOM1639102380
+open C:\Users\ASUS\AppData\Local\Temp\TestLoadSupportsUTF8BOM1639102380
+stat C:\Users\ASUS\AppData\Local\Temp\TestLoadSupportsUTF8BOM1639102380\001
+open C:\Users\ASUS\AppData\Local\Temp\TestLoadSupportsUTF8BOM1639102380\001

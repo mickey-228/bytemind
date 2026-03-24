@@ -1,0 +1,8 @@
+# test log
+open C:\Users\ASUS\AppData\Local\Temp\TestApplyRejectsConflicts240484580\001\demo.txt
+open C:\Users\ASUS\AppData\Local\Temp\TestApplyRejectsConflicts240484580\001\demo.txt
+open C:\Users\ASUS\AppData\Local\Temp\TestApplyRejectsConflicts240484580\001\demo.txt
+stat C:\Users\ASUS\AppData\Local\Temp\TestApplyRejectsConflicts240484580
+open C:\Users\ASUS\AppData\Local\Temp\TestApplyRejectsConflicts240484580
+stat C:\Users\ASUS\AppData\Local\Temp\TestApplyRejectsConflicts240484580\001
+open C:\Users\ASUS\AppData\Local\Temp\TestApplyRejectsConflicts240484580\001

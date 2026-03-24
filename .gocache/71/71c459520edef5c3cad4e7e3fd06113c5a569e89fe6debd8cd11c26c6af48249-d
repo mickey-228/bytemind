@@ -1,0 +1,21 @@
+# test log
+open C:\Users\ASUS\AppData\Local\Temp\TestResolveRejectsEscapingPaths1483250381\001\demo.txt
+stat C:\Users
+stat C:\Users\ASUS
+stat C:\Users\ASUS\AppData
+stat C:\Users\ASUS\AppData\Local
+stat C:\Users\ASUS\AppData\Local\Temp
+stat C:\Users\ASUS\AppData\Local\Temp\TestResolveRejectsEscapingPaths1483250381
+stat C:\Users\ASUS\AppData\Local\Temp\TestResolveRejectsEscapingPaths1483250381\001
+stat C:\Users\ASUS\AppData\Local\Temp\TestResolveRejectsEscapingPaths1483250381\001
+stat C:\Users\ASUS\AppData\Local\Temp\TestResolveRejectsEscapingPaths1483250381\outside.txt
+stat C:\Users
+stat C:\Users\ASUS
+stat C:\Users\ASUS\AppData
+stat C:\Users\ASUS\AppData\Local
+stat C:\Users\ASUS\AppData\Local\Temp
+stat C:\Users\ASUS\AppData\Local\Temp\TestResolveRejectsEscapingPaths1483250381
+stat C:\Users\ASUS\AppData\Local\Temp\TestResolveRejectsEscapingPaths1483250381
+open C:\Users\ASUS\AppData\Local\Temp\TestResolveRejectsEscapingPaths1483250381
+stat C:\Users\ASUS\AppData\Local\Temp\TestResolveRejectsEscapingPaths1483250381\001
+open C:\Users\ASUS\AppData\Local\Temp\TestResolveRejectsEscapingPaths1483250381\001

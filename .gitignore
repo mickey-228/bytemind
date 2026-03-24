@@ -1,0 +1,6 @@
+# 忽略所有 exe 文件
+*.exe
+# 忽略 Go 编译的二进制文件
+bin/
+# 忽略配置文件（防止泄露 API Key）
+forgecli.json

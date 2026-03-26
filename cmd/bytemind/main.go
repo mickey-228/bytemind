@@ -40,7 +40,6 @@ var slashCommands = []slashCommand{
 	{Name: "/sessions", Usage: "/sessions [limit]", Description: "List recent sessions"},
 	{Name: "/resume", Usage: "/resume <id>", Description: "Resume a recent session by id or prefix"},
 	{Name: "/new", Usage: "/new", Description: "Start a new session in the current workspace"},
-	{Name: "/exit", Usage: "/exit", Description: "Exit the CLI"},
 	{Name: "/quit", Usage: "/quit", Description: "Exit the CLI"},
 }
 
@@ -92,7 +91,7 @@ func runChat(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 
 	fmt.Fprintf(stdout, "%ssession%s %s\n", ansiDim, ansiReset, sess.ID)
 	fmt.Fprintf(stdout, "%sworkspace%s %s\n", ansiDim, ansiReset, sess.Workspace)
-	fmt.Fprintln(stdout, "Type /help for commands, /exit to quit.")
+	fmt.Fprintln(stdout, "Type /help for commands, /quit to quit.")
 
 	scanner := bufio.NewScanner(stdin)
 	for {
@@ -252,7 +251,7 @@ func handleSlashCommand(stdout io.Writer, store *session.Store, current *session
 	}
 
 	switch fields[0] {
-	case "/exit", "/quit":
+	case "/quit":
 		return current, true, true, nil
 	case "/help":
 		printHelp(stdout)

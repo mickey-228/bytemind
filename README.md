@@ -163,7 +163,7 @@ Anthropic 示例：
 - `/help`
 - `/session`
 - `/sessions`
-- `/exit`
+- `/quit`
 
 ## 已实现工具
 

@@ -12,7 +12,6 @@
 - 工作区文件浏览、读取、搜索、写入、精确替换
 - `apply_patch` 补丁编辑器
 - Shell 命令执行与审批策略
-- `-workspace` 跨目录工作区切换
 - `-max-iterations` 执行预算覆盖
 - 到达预算时自动返回阶段性总结，而不是直接报错
 - 简单的重复工具调用检测，避免死循环
@@ -54,16 +53,6 @@ go run ./cmd/bytemind run -prompt "分析当前项目并生成改进建议"
 ```powershell
 go run ./cmd/bytemind chat -max-iterations 64
 go run ./cmd/bytemind run -prompt "refactor this module" -max-iterations 64
-```
-
-## 跨目录运行
-
-`go run ./cmd/bytemind ...` 只能在本仓库模块根目录内执行，因为 Go 需要从当前目录向上找到 `go.mod`。
-
-如果你想在别的目录里启动并让程序作用在那个目录，可以这样：
-
-```powershell
-go -C E:\ByteMind run ./cmd/bytemind chat -workspace E:\experiments
 ```
 
 ## 配置文件

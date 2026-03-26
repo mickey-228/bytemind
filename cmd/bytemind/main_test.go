@@ -94,3 +94,16 @@ func TestSameWorkspaceNormalizesPaths(t *testing.T) {
 		t.Fatal("expected normalized paths to match")
 	}
 }
+
+func TestRunChatRejectsWorkspaceFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := runChat([]string{"-workspace", `E:\\repo`}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected -workspace to be rejected")
+	}
+	if !strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

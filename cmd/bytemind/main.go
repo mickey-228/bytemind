@@ -77,14 +77,13 @@ func runChat(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	model := fs.String("model", "", "Override model name")
 	sessionID := fs.String("session", "", "Resume an existing session")
 	streamOverride := fs.String("stream", "", "Override streaming: true or false")
-	workspaceOverride := fs.String("workspace", "", "Workspace to operate on; defaults to current directory")
 	maxIterations := fs.Int("max-iterations", 0, "Override execution budget for this run")
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	app, store, sess, err := bootstrap(*configPath, *model, *sessionID, *streamOverride, *workspaceOverride, *maxIterations, stdin, stdout)
+	app, store, sess, err := bootstrap(*configPath, *model, *sessionID, *streamOverride, *maxIterations, stdin, stdout)
 	if err != nil {
 		return err
 	}
@@ -148,7 +147,6 @@ func runOneShot(args []string, stdin io.Reader, stdout, stderr io.Writer) error 
 	sessionID := fs.String("session", "", "Reuse an existing session")
 	prompt := fs.String("prompt", "", "Prompt to send")
 	streamOverride := fs.String("stream", "", "Override streaming: true or false")
-	workspaceOverride := fs.String("workspace", "", "Workspace to operate on; defaults to current directory")
 	maxIterations := fs.Int("max-iterations", 0, "Override execution budget for this run")
 
 	if err := fs.Parse(args); err != nil {
@@ -162,7 +160,7 @@ func runOneShot(args []string, stdin io.Reader, stdout, stderr io.Writer) error 
 		return errors.New("run requires -prompt or trailing prompt text")
 	}
 
-	app, _, sess, err := bootstrap(*configPath, *model, *sessionID, *streamOverride, *workspaceOverride, *maxIterations, stdin, stdout)
+	app, _, sess, err := bootstrap(*configPath, *model, *sessionID, *streamOverride, *maxIterations, stdin, stdout)
 	if err != nil {
 		return err
 	}
@@ -175,8 +173,8 @@ func promptPrefix() string {
 	return "\n" + ansiBlue + "bytemind>" + ansiReset + " "
 }
 
-func bootstrap(configPath, modelOverride, sessionID, streamOverride, workspaceOverride string, maxIterationsOverride int, stdin io.Reader, stdout io.Writer) (*agent.Runner, *session.Store, *session.Session, error) {
-	workspace, err := resolveWorkspace(workspaceOverride)
+func bootstrap(configPath, modelOverride, sessionID, streamOverride string, maxIterationsOverride int, stdin io.Reader, stdout io.Writer) (*agent.Runner, *session.Store, *session.Session, error) {
+	workspace, err := os.Getwd()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -433,8 +431,8 @@ func sameWorkspace(a, b string) bool {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "go run ./cmd/bytemind chat [-config path] [-model name] [-session id] [-stream true|false] [-workspace path] [-max-iterations n]")
-	fmt.Fprintln(w, "go run ./cmd/bytemind run -prompt \"task\" [-config path] [-model name] [-session id] [-stream true|false] [-workspace path] [-max-iterations n]")
+	fmt.Fprintln(w, "go run ./cmd/bytemind chat [-config path] [-model name] [-session id] [-stream true|false] [-max-iterations n]")
+	fmt.Fprintln(w, "go run ./cmd/bytemind run -prompt \"task\" [-config path] [-model name] [-session id] [-stream true|false] [-max-iterations n]")
 }
 
 func printCommandSuggestions(w io.Writer, input string, suggestions []string) {
@@ -457,11 +455,4 @@ func shortID(id string) string {
 		return id
 	}
 	return id[:16]
-}
-
-func resolveWorkspace(workspaceOverride string) (string, error) {
-	if strings.TrimSpace(workspaceOverride) == "" {
-		return os.Getwd()
-	}
-	return filepath.Abs(workspaceOverride)
 }

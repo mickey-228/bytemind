@@ -538,8 +538,13 @@ func (m *model) appendAssistantDelta(delta string) {
 		return
 	}
 	if m.streamingIndex >= 0 && m.streamingIndex < len(m.chatItems) {
-		if m.chatItems[m.streamingIndex].Status == "pending" {
+		current := m.chatItems[m.streamingIndex].Body
+		if m.chatItems[m.streamingIndex].Status == "pending" || current == m.thinkingText() {
 			m.chatItems[m.streamingIndex].Body = delta
+		} else if strings.HasPrefix(delta, current) {
+			m.chatItems[m.streamingIndex].Body = delta
+		} else if strings.HasSuffix(current, delta) {
+			// Some providers may repeat the latest chunk; ignore it.
 		} else {
 			m.chatItems[m.streamingIndex].Body += delta
 		}
@@ -565,6 +570,13 @@ func (m *model) finishAssistantMessage(content string) {
 		m.chatItems[m.streamingIndex].Status = "final"
 		m.streamingIndex = -1
 		return
+	}
+	if len(m.chatItems) > 0 {
+		last := &m.chatItems[len(m.chatItems)-1]
+		if last.Kind == "assistant" && strings.TrimSpace(last.Body) == content {
+			last.Status = "final"
+			return
+		}
 	}
 	m.chatItems = append(m.chatItems, chatEntry{
 		Kind:   "assistant",

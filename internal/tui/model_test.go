@@ -234,3 +234,26 @@ func TestFormatChatBodyRendersCodeBlockWithoutFences(t *testing.T) {
 		t.Fatalf("expected code contents to remain, got %q", got)
 	}
 }
+
+func TestFinishAssistantMessageDoesNotAppendDuplicateCard(t *testing.T) {
+	m := model{
+		chatItems: []chatEntry{
+			{
+				Kind:   "assistant",
+				Title:  "AICoding",
+				Body:   "同一条回复",
+				Status: "streaming",
+			},
+		},
+		streamingIndex: -1,
+	}
+
+	m.finishAssistantMessage("同一条回复")
+
+	if len(m.chatItems) != 1 {
+		t.Fatalf("expected no duplicate assistant card, got %d items", len(m.chatItems))
+	}
+	if m.chatItems[0].Status != "final" {
+		t.Fatalf("expected assistant card to be marked final, got %q", m.chatItems[0].Status)
+	}
+}

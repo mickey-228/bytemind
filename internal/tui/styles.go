@@ -3,7 +3,6 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 var (
-	colorBg      = lipgloss.Color("#0F172A")
 	colorPanel   = lipgloss.Color("#111827")
 	colorBorder  = lipgloss.Color("#243244")
 	colorAccent  = lipgloss.Color("#5EEAD4")
@@ -62,15 +61,6 @@ var (
 				BorderForeground(colorAccent).
 				Padding(0, 1).
 				Background(colorPanel)
-
-	sidebarStyle = lipgloss.NewStyle().
-			Background(colorBg).
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(colorBorder).
-			Padding(0, 1)
-
-	sectionStyle = lipgloss.NewStyle().
-			MarginBottom(1)
 
 	sectionTitleStyle = lipgloss.NewStyle().
 				Bold(true).

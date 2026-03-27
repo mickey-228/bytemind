@@ -23,8 +23,6 @@ import (
 
 const (
 	defaultSessionLimit = 8
-	sidebarWidthMin     = 32
-	sidebarWidthMax     = 44
 )
 
 type screenKind string
@@ -96,7 +94,7 @@ var commandItems = []commandItem{
 	{Name: "/plan done", Usage: "/plan done <index>", Description: "把指定步骤标记为已完成。"},
 	{Name: "/plan pending", Usage: "/plan pending <index>", Description: "把指定步骤重新标记为待处理。"},
 	{Name: "/plan clear", Usage: "/plan clear", Description: "清空当前会话中的任务计划。"},
-	{Name: "/exit", Usage: "/exit", Description: "退出当前 TUI 界面。"},
+	{Name: "/quit", Usage: "/quit", Description: "退出当前 TUI 界面。"},
 }
 
 type model struct {
@@ -246,11 +244,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 
 	return m, nil
+}
+
+func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.screen != screenChat || m.sessionsOpen || m.helpOpen || m.commandOpen || m.approval != nil {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown, tea.MouseButtonWheelLeft, tea.MouseButtonWheelRight:
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
+	default:
+		return m, nil
+	}
 }
 
 func (m model) View() string {
@@ -413,6 +427,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgdown":
 		m.viewport.PageDown()
 		return m, nil
+	case "ctrl+up":
+		m.viewport.LineUp(1)
+		return m, nil
+	case "ctrl+down":
+		m.viewport.LineDown(1)
+		return m, nil
 	case "home":
 		m.viewport.GotoTop()
 		return m, nil
@@ -430,7 +450,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if value == "" {
 			return m, nil
 		}
-		if value == "/exit" || value == "/quit" {
+		if value == "/quit" {
 			return m, tea.Quit
 		}
 		if strings.HasPrefix(value, "/") {
@@ -718,7 +738,7 @@ func (m model) renderHeader() string {
 }
 
 func (m model) renderFooter() string {
-	hint := mutedStyle.Render("Type / for commands  -  Enter send  -  Ctrl+N new session  -  Ctrl+L sessions  -  Ctrl+C quit")
+	hint := mutedStyle.Render("Type / for commands  -  ? help  -  Ctrl+Up/Down scroll  -  Enter send  -  Ctrl+N new session  -  Ctrl+L sessions  -  Ctrl+C quit")
 	inputBorder := m.inputBorderStyle().
 		Width(m.chatPanelInnerWidth()).
 		Render(m.input.View())
@@ -811,6 +831,9 @@ func (m *model) handleSlashCommand(input string) error {
 		m.statusNote = "已在聊天区显示帮助说明。"
 		return nil
 	case "/session":
+		m.screen = screenChat
+		m.appendChat(chatEntry{Kind: "user", Title: "You", Body: input, Status: "final"})
+		m.appendChat(chatEntry{Kind: "assistant", Title: "AICoding", Body: m.sessionText(), Status: "final"})
 		m.statusNote = fmt.Sprintf("session %s in %s", m.sess.ID, m.sess.Workspace)
 		return nil
 	case "/sessions":
@@ -840,6 +863,9 @@ func (m *model) handleSlashCommand(input string) error {
 func (m *model) handlePlanCommand(input string) error {
 	fields := strings.Fields(input)
 	if len(fields) == 1 {
+		m.screen = screenChat
+		m.appendChat(chatEntry{Kind: "user", Title: "You", Body: input, Status: "final"})
+		m.appendChat(chatEntry{Kind: "assistant", Title: "AICoding", Body: m.planText(), Status: "final"})
 		if len(m.plan) == 0 {
 			m.statusNote = "No active plan."
 		} else {
@@ -1232,10 +1258,10 @@ func shouldExecuteFromPalette(item commandItem) bool {
 func (m model) helpText() string {
 	return strings.Join([]string{
 		"进入方式",
-		"先执行 `scripts\\install.ps1` 安装一次，之后就可以直接在终端输入 `aicoding chat` 启动。",
-		"`aicoding chat` 会先进入带大 Logo 的启动页。",
+		"在仓库根目录运行 `go run ./cmd/bytemind chat` 即可启动。",
+		"`go run ./cmd/bytemind chat` 会先进入带大 Logo 的启动页。",
 		"在启动页输入内容并按 Enter 后，会进入正式聊天界面。",
-		"`aicoding run -prompt \"...\"` 仍然保留为一次性执行模式。",
+		"`go run ./cmd/bytemind run -prompt \"...\"` 可用于一次性执行模式。",
 		"",
 		"斜杠命令",
 		"/help: 查看帮助说明。",
@@ -1250,16 +1276,13 @@ func (m model) helpText() string {
 		"/plan done <index>: 将步骤标记为已完成。",
 		"/plan pending <index>: 将步骤重新标记为待处理。",
 		"/plan clear: 清空当前计划。",
-		"/exit 或 /quit: 退出 TUI。",
+		"/quit: 退出 TUI。",
 		"",
 		"当前界面",
 		"启动页是一个居中的 Logo 加输入框。",
 		"主界面只显示用户消息和助手回复，不把聊天内容塞到旁边区域。",
 		"顶部状态栏会显示工作区、provider、model、审批策略和当前状态。",
 		"如果需要 shell 审批，会以弹窗方式暂停等待确认。",
-		"",
-		"当前版本还没实现",
-		"/clear、/model、/undo、/compact、diff 审阅、git 回滚、token 用量显示、Markdown 高亮渲染。",
 	}, "\n")
 }
 
@@ -1391,6 +1414,29 @@ func copyPlan(plan []session.PlanItem) []session.PlanItem {
 	cloned := make([]session.PlanItem, len(plan))
 	copy(cloned, plan)
 	return cloned
+}
+
+func (m model) sessionText() string {
+	if m.sess == nil {
+		return "No active session."
+	}
+	return strings.Join([]string{
+		fmt.Sprintf("Session ID: %s", m.sess.ID),
+		fmt.Sprintf("Workspace: %s", m.sess.Workspace),
+		fmt.Sprintf("Updated: %s", m.sess.UpdatedAt.Local().Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("Messages: %d", len(m.sess.Messages)),
+	}, "\n")
+}
+
+func (m model) planText() string {
+	if len(m.plan) == 0 {
+		return "No active plan."
+	}
+	lines := []string{fmt.Sprintf("Current plan (%d step(s)):", len(m.plan))}
+	for i, item := range m.plan {
+		lines = append(lines, fmt.Sprintf("%d. [%s] %s", i+1, item.Status, item.Step))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func statusGlyph(status string) string {

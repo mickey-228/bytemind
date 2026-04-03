@@ -115,9 +115,6 @@ func applyEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_BASE_URL")); value != "" {
 		cfg.Provider.BaseURL = value
 	}
-	if value := strings.TrimSpace(os.Getenv("BYTEMIND_API_PATH")); value != "" {
-		cfg.Provider.APIPath = value
-	}
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_MODEL")); value != "" {
 		cfg.Provider.Model = value
 	}
@@ -126,15 +123,6 @@ func applyEnv(cfg *Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_API_KEY_ENV")); value != "" {
 		cfg.Provider.APIKeyEnv = value
-	}
-	if value := strings.TrimSpace(os.Getenv("BYTEMIND_AUTH_HEADER")); value != "" {
-		cfg.Provider.AuthHeader = value
-	}
-	if value := strings.TrimSpace(os.Getenv("BYTEMIND_AUTH_SCHEME")); value != "" {
-		cfg.Provider.AuthScheme = value
-	}
-	if value := strings.TrimSpace(os.Getenv("BYTEMIND_ANTHROPIC_VERSION")); value != "" {
-		cfg.Provider.AnthropicVersion = value
 	}
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_APPROVAL_POLICY")); value != "" {
 		cfg.ApprovalPolicy = value

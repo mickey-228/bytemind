@@ -27,6 +27,7 @@ const (
 	defaultSessionLimit = 8
 	scrollStep          = 3
 	commandPageSize     = 3
+	mentionPageSize     = 5
 	pasteSubmitGuard    = 400 * time.Millisecond
 	assistantLabel      = "Bytemind"
 	thinkingLabel       = "Bytemind"
@@ -133,17 +134,25 @@ type model struct {
 	sessionLimit   int
 	sessionCursor  int
 	commandCursor  int
+	mentionCursor  int
 	screen         screenKind
 	mode           agentMode
 	sessionsOpen   bool
 	helpOpen       bool
 	commandOpen    bool
+	mentionOpen    bool
 	busy           bool
 	streamingIndex int
 	statusNote     string
 	phase          string
 	llmConnected   bool
 	approval       *approvalPrompt
+	mentionQuery   string
+	mentionToken   mentionToken
+	mentionResults []mentionCandidate
+	mentionIndex   *workspaceFileIndex
+	mentionRecent  map[string]int
+	mentionSeq     int
 	lastPasteAt    time.Time
 	lastInputAt    time.Time
 	inputBurstSize int
@@ -212,9 +221,13 @@ func newModel(opts Options) model {
 		phase:          "idle",
 		llmConnected:   true,
 		chatAutoFollow: true,
+		mentionIndex:   newWorkspaceFileIndex(opts.Workspace),
 	}
 	m.syncInputStyle()
-	m.syncCommandPalette()
+	m.syncInputOverlays()
+	if m.mentionIndex != nil {
+		go m.mentionIndex.Prewarm()
+	}
 	return m
 }
 
@@ -285,7 +298,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		if m.input.Value() != before {
 			m.noteInputMutation(before, m.input.Value(), "")
-			m.syncCommandPalette()
+			m.syncInputOverlays()
 		}
 		return m, cmd
 	}
@@ -294,7 +307,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.helpOpen || m.commandOpen || m.approval != nil {
+	if m.helpOpen || m.commandOpen || m.mentionOpen || m.approval != nil {
 		return m, nil
 	}
 	if m.screen != screenChat && m.screen != screenLanding {
@@ -490,6 +503,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case "tab":
+		if m.commandOpen || m.mentionOpen || m.sessionsOpen || m.helpOpen || m.approval != nil {
+			break
+		}
 		m.toggleMode()
 		return m, nil
 	case "ctrl+g":
@@ -524,6 +540,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.commandOpen {
 		return m.handleCommandPaletteKey(msg)
+	}
+
+	if m.mentionOpen {
+		return m.handleMentionPaletteKey(msg)
 	}
 
 	if m.sessionsOpen {
@@ -584,7 +604,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		if m.input.Value() != before {
 			m.noteInputMutation(before, m.input.Value(), "alt+enter")
-			m.syncCommandPalette()
+			m.syncInputOverlays()
 		}
 		return m, cmd
 	}
@@ -596,7 +616,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			if m.input.Value() != before {
 				m.noteInputMutation(before, m.input.Value(), "paste-enter")
-				m.syncCommandPalette()
+				m.syncInputOverlays()
 			}
 			return m, cmd
 		}
@@ -644,7 +664,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.input.Value() != before {
 		m.noteInputMutation(before, m.input.Value(), msg.String())
 	}
-	m.syncCommandPalette()
+	m.syncInputOverlays()
 	return m, cmd
 }
 
@@ -720,7 +740,73 @@ func (m model) handleCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.input, cmd = m.input.Update(msg)
 	if m.input.Value() != before {
 		m.noteInputMutation(before, m.input.Value(), msg.String())
-		m.syncCommandPalette()
+		m.syncInputOverlays()
+	}
+	return m, cmd
+}
+
+func (m model) handleMentionPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	items := m.mentionResults
+	switch {
+	case isPageUpKey(msg):
+		if len(items) > 0 {
+			m.mentionCursor = max(0, m.mentionCursor-mentionPageSize)
+		}
+		return m, nil
+	case isPageDownKey(msg):
+		if len(items) > 0 {
+			m.mentionCursor = min(len(items)-1, m.mentionCursor+mentionPageSize)
+		}
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "esc":
+		m.closeMentionPalette()
+		return m, nil
+	case "up", "k":
+		if len(items) > 0 {
+			m.mentionCursor = max(0, m.mentionCursor-1)
+		}
+		return m, nil
+	case "down", "j":
+		if len(items) > 0 {
+			m.mentionCursor = min(len(items)-1, m.mentionCursor+1)
+		}
+		return m, nil
+	case "tab":
+		selected, ok := m.selectedMentionCandidate()
+		if !ok {
+			return m, nil
+		}
+		m.recordRecentMention(selected.Path)
+		nextValue := insertMentionIntoInput(m.input.Value(), m.mentionToken, selected.Path)
+		m.setInputValue(nextValue)
+		m.statusNote = "Inserted mention: " + selected.Path
+		m.closeMentionPalette()
+		m.syncInputOverlays()
+		return m, nil
+	case "enter":
+		selected, ok := m.selectedMentionCandidate()
+		if !ok {
+			m.closeMentionPalette()
+			return m.handleKey(msg)
+		}
+		m.recordRecentMention(selected.Path)
+		nextValue := insertMentionIntoInput(m.input.Value(), m.mentionToken, selected.Path)
+		m.setInputValue(nextValue)
+		m.statusNote = "Inserted mention: " + selected.Path
+		m.closeMentionPalette()
+		m.syncInputOverlays()
+		return m, nil
+	}
+
+	before := m.input.Value()
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	if m.input.Value() != before {
+		m.noteInputMutation(before, m.input.Value(), msg.String())
+		m.syncInputOverlays()
 	}
 	return m, cmd
 }
@@ -729,7 +815,8 @@ func (m *model) openCommandPalette() {
 	m.commandOpen = true
 	m.commandCursor = 0
 	m.setInputValue("/")
-	m.syncCommandPalette()
+	m.closeMentionPalette()
+	m.syncInputOverlays()
 }
 
 func (m *model) toggleMode() {
@@ -759,6 +846,7 @@ func (m *model) toggleMode() {
 func (m *model) closeCommandPalette() {
 	m.commandOpen = false
 	m.commandCursor = 0
+	m.closeMentionPalette()
 	m.input.Reset()
 }
 
@@ -1213,7 +1301,9 @@ func (m model) renderLanding() string {
 		Width(m.landingInputShellWidth()).
 		Render(m.input.View())
 	parts := []string{logo, "", m.renderModeTabs(), ""}
-	if m.commandOpen {
+	if m.mentionOpen {
+		parts = append(parts, m.renderMentionPalette(), "")
+	} else if m.commandOpen {
 		parts = append(parts, m.renderCommandPalette(), "")
 	}
 	parts = append(parts, inputBox, "", mutedStyle.Render("tab agents  路  / commands  路  Ctrl+L sessions  路  Ctrl+C quit"))
@@ -1234,7 +1324,9 @@ func (m model) renderFooter() string {
 	if m.approval != nil {
 		parts = append(parts, m.renderApprovalBanner())
 	}
-	if m.commandOpen {
+	if m.mentionOpen {
+		parts = append(parts, m.renderMentionPalette())
+	} else if m.commandOpen {
 		parts = append(parts, m.renderCommandPalette())
 	}
 	parts = append(parts, lipgloss.NewStyle().Width(m.chatPanelInnerWidth()).Render(m.renderModeTabs()), inputBorder, hint)
@@ -1352,6 +1444,59 @@ func (m model) renderCommandPalette() string {
 		rows = append(rows, commandPaletteRowStyle.Width(max(1, width-commandPaletteStyle.GetHorizontalFrameSize())).Render(""))
 	}
 	rows = append(rows, commandPaletteMetaStyle.Render("Up/Down move  PgUp/PgDn page  Enter run  Esc close"))
+	return commandPaletteStyle.Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
+}
+
+func (m model) renderMentionPalette() string {
+	width := m.commandPaletteWidth()
+	items := m.mentionResults
+	if len(items) == 0 {
+		return commandPaletteStyle.Width(width).Render(
+			commandPaletteMetaStyle.Width(max(1, width-commandPaletteStyle.GetHorizontalFrameSize())).Render("No matching files in workspace."),
+		)
+	}
+
+	selected, _ := m.selectedMentionCandidate()
+	nameWidth := min(26, max(12, width/4))
+	descWidth := max(12, width-commandPaletteStyle.GetHorizontalFrameSize()-nameWidth-4)
+	rows := make([]string, 0, mentionPageSize+1)
+	for _, item := range m.visibleMentionItemsPage() {
+		rowStyle := commandPaletteRowStyle
+		nameStyle := commandPaletteNameStyle
+		descStyle := commandPaletteDescStyle
+		if item.Path == selected.Path {
+			rowStyle = commandPaletteSelectedRowStyle
+			nameStyle = commandPaletteSelectedNameStyle
+			descStyle = commandPaletteSelectedDescStyle
+		}
+
+		nameText := item.BaseName
+		if tag := strings.TrimSpace(item.TypeTag); tag != "" {
+			nameText = "[" + tag + "] " + nameText
+		}
+		if m.hasRecentMention(item.Path) {
+			nameText = "* " + nameText
+		} else {
+			nameText = "  " + nameText
+		}
+
+		name := nameStyle.Width(nameWidth).Render(compact(nameText, max(12, nameWidth)))
+		desc := descStyle.Width(descWidth).Render(compact(item.Path, max(12, descWidth)))
+		rows = append(rows, rowStyle.Width(max(1, width-commandPaletteStyle.GetHorizontalFrameSize())).Render(
+			lipgloss.JoinHorizontal(lipgloss.Top, name, "  ", desc),
+		))
+	}
+	for len(rows) < mentionPageSize {
+		rows = append(rows, commandPaletteRowStyle.Width(max(1, width-commandPaletteStyle.GetHorizontalFrameSize())).Render(""))
+	}
+	metaText := "* recent  Type @query to search  Up/Down move  Enter/Tab insert  Esc close"
+	if m.mentionIndex != nil {
+		stats := m.mentionIndex.Stats()
+		if stats.Truncated && stats.MaxFiles > 0 {
+			metaText = fmt.Sprintf("* recent  indexed first %d files  Enter/Tab insert  Esc close", stats.MaxFiles)
+		}
+	}
+	rows = append(rows, commandPaletteMetaStyle.Render(metaText))
 	return commandPaletteStyle.Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 }
 
@@ -1980,6 +2125,7 @@ func (m *model) syncCommandPalette() {
 		return
 	}
 	m.commandOpen = true
+	m.closeMentionPalette()
 	items := m.filteredCommands()
 	if len(items) == 0 {
 		m.commandCursor = 0
@@ -1988,6 +2134,67 @@ func (m *model) syncCommandPalette() {
 	if m.commandCursor < 0 || m.commandCursor >= len(items) {
 		m.commandCursor = 0
 	}
+}
+
+func (m *model) syncInputOverlays() {
+	m.syncCommandPalette()
+	m.syncMentionPalette()
+}
+
+func (m *model) syncMentionPalette() {
+	if m.commandOpen {
+		m.closeMentionPalette()
+		return
+	}
+	token, ok := findActiveMentionToken(m.input.Value())
+	if !ok {
+		m.closeMentionPalette()
+		return
+	}
+
+	if m.mentionIndex == nil {
+		m.mentionIndex = newWorkspaceFileIndex(m.workspace)
+	}
+	results := m.mentionIndex.SearchWithRecency(token.Query, mentionPageSize*3, m.mentionRecent)
+	m.mentionOpen = true
+	m.mentionQuery = token.Query
+	m.mentionToken = token
+	m.mentionResults = results
+
+	if len(results) == 0 {
+		m.mentionCursor = 0
+		return
+	}
+	if m.mentionCursor < 0 || m.mentionCursor >= len(results) {
+		m.mentionCursor = 0
+	}
+}
+
+func (m *model) closeMentionPalette() {
+	m.mentionOpen = false
+	m.mentionCursor = 0
+	m.mentionQuery = ""
+	m.mentionToken = mentionToken{}
+	m.mentionResults = nil
+}
+
+func (m *model) recordRecentMention(path string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	if m.mentionRecent == nil {
+		m.mentionRecent = make(map[string]int, 16)
+	}
+	m.mentionSeq++
+	m.mentionRecent[path] = m.mentionSeq
+}
+
+func (m model) hasRecentMention(path string) bool {
+	if m.mentionRecent == nil {
+		return false
+	}
+	return m.mentionRecent[path] > 0
 }
 
 func (m model) filteredCommands() []commandItem {
@@ -2025,6 +2232,24 @@ func (m model) visibleCommandItemsPage() []commandItem {
 	start := (cursor / commandPageSize) * commandPageSize
 	end := min(len(items), start+commandPageSize)
 	return items[start:end]
+}
+
+func (m model) selectedMentionCandidate() (mentionCandidate, bool) {
+	if len(m.mentionResults) == 0 {
+		return mentionCandidate{}, false
+	}
+	index := clamp(m.mentionCursor, 0, len(m.mentionResults)-1)
+	return m.mentionResults[index], true
+}
+
+func (m model) visibleMentionItemsPage() []mentionCandidate {
+	if len(m.mentionResults) == 0 {
+		return nil
+	}
+	cursor := clamp(m.mentionCursor, 0, len(m.mentionResults)-1)
+	start := (cursor / mentionPageSize) * mentionPageSize
+	end := min(len(m.mentionResults), start+mentionPageSize)
+	return m.mentionResults[start:end]
 }
 
 func (m *model) setInputValue(value string) {

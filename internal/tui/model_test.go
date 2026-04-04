@@ -2040,6 +2040,44 @@ func TestBusyEnterInToolPhaseDefersBTWCancel(t *testing.T) {
 	}
 }
 
+func TestSubmitBTWWithoutRunCancelRestartsImmediately(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	m := model{
+		async:     make(chan tea.Msg, 1),
+		busy:      true,
+		mode:      modeBuild,
+		input:     input,
+		sess:      session.New("E:\\bytemind"),
+		workspace: "E:\\bytemind",
+	}
+
+	got, cmd := m.submitBTW("continue with deletion")
+	updated := got.(model)
+
+	if cmd == nil {
+		t.Fatalf("expected fallback btw path to start a new run command")
+	}
+	if !updated.busy {
+		t.Fatalf("expected model to become busy after immediate btw restart")
+	}
+	if updated.interrupting {
+		t.Fatalf("expected interrupting state to clear after immediate restart")
+	}
+	if updated.interruptSafe {
+		t.Fatalf("expected interruptSafe to be false after immediate restart")
+	}
+	if len(updated.pendingBTW) != 0 {
+		t.Fatalf("expected pending btw queue to be consumed, got %#v", updated.pendingBTW)
+	}
+	if updated.runCancel == nil {
+		t.Fatalf("expected immediate restart to set runCancel")
+	}
+	if updated.statusNote != "BTW accepted. Restarting with your update..." {
+		t.Fatalf("expected immediate restart status note, got %q", updated.statusNote)
+	}
+}
+
 func TestToolCallCompletedTriggersDeferredBTWCancel(t *testing.T) {
 	canceled := false
 	m := model{
@@ -2170,6 +2208,13 @@ func TestComposeBTWPromptSingleEntryKeepsContinuationContext(t *testing.T) {
 	}
 }
 
+func TestComposeBTWPromptIgnoresEmptyEntries(t *testing.T) {
+	got := composeBTWPrompt([]string{"", "   ", "\n\t"})
+	if got != "" {
+		t.Fatalf("expected empty btw prompt when all entries are blank, got %q", got)
+	}
+}
+
 func TestSubmitBTWShowsDropHintWhenQueueCapped(t *testing.T) {
 	input := textarea.New()
 	input.Focus()
@@ -2197,6 +2242,101 @@ func TestSubmitBTWShowsDropHintWhenQueueCapped(t *testing.T) {
 	}
 	if !strings.Contains(updated.statusNote, "dropped 1 older") {
 		t.Fatalf("expected drop hint in status note, got %q", updated.statusNote)
+	}
+}
+
+func TestNewSessionClearsInterruptState(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	current := session.New(workspace)
+	if err := store.Save(current); err != nil {
+		t.Fatal(err)
+	}
+
+	input := textarea.New()
+	input.SetValue("pending input")
+	m := model{
+		store:         store,
+		sess:          current,
+		workspace:     workspace,
+		input:         input,
+		pendingBTW:    []string{"keep this"},
+		interrupting:  true,
+		interruptSafe: true,
+		runCancel:     func() {},
+		activeRunID:   9,
+	}
+
+	if err := m.newSession(); err != nil {
+		t.Fatalf("expected newSession to succeed, got %v", err)
+	}
+	if m.interrupting || m.interruptSafe {
+		t.Fatalf("expected interrupt flags to clear, got interrupting=%v interruptSafe=%v", m.interrupting, m.interruptSafe)
+	}
+	if len(m.pendingBTW) != 0 {
+		t.Fatalf("expected pending btw queue cleared, got %#v", m.pendingBTW)
+	}
+	if m.runCancel != nil {
+		t.Fatalf("expected runCancel cleared on new session")
+	}
+	if m.activeRunID != 0 {
+		t.Fatalf("expected activeRunID reset, got %d", m.activeRunID)
+	}
+	if m.screen != screenLanding {
+		t.Fatalf("expected new session to switch to landing screen, got %q", m.screen)
+	}
+}
+
+func TestResumeSessionClearsInterruptState(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	current := session.New(workspace)
+	target := session.New(workspace)
+	if err := store.Save(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(target); err != nil {
+		t.Fatal(err)
+	}
+
+	m := model{
+		store:         store,
+		sess:          current,
+		workspace:     workspace,
+		sessions:      []session.Summary{{ID: target.ID}},
+		pendingBTW:    []string{"queued"},
+		interrupting:  true,
+		interruptSafe: true,
+		runCancel:     func() {},
+		activeRunID:   7,
+	}
+
+	if err := m.resumeSession(target.ID); err != nil {
+		t.Fatalf("expected resumeSession to succeed, got %v", err)
+	}
+	if m.sess == nil || m.sess.ID != target.ID {
+		t.Fatalf("expected target session to become active, got %#v", m.sess)
+	}
+	if m.interrupting || m.interruptSafe {
+		t.Fatalf("expected interrupt flags to clear, got interrupting=%v interruptSafe=%v", m.interrupting, m.interruptSafe)
+	}
+	if len(m.pendingBTW) != 0 {
+		t.Fatalf("expected pending btw queue cleared, got %#v", m.pendingBTW)
+	}
+	if m.runCancel != nil {
+		t.Fatalf("expected runCancel cleared on resume")
+	}
+	if m.activeRunID != 0 {
+		t.Fatalf("expected activeRunID reset, got %d", m.activeRunID)
+	}
+	if m.screen != screenChat {
+		t.Fatalf("expected resume to switch to chat screen, got %q", m.screen)
 	}
 }
 

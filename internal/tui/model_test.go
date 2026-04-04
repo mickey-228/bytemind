@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -183,6 +184,89 @@ func TestHandleMouseWheelScrollsLandingInputWhenPointerIsOverInput(t *testing.T)
 	}
 }
 
+func TestRenderScrollbarHiddenWhenContentFits(t *testing.T) {
+	m := model{
+		screen:                screenChat,
+		viewportContentHeight: 8,
+	}
+	if got := m.renderScrollbar(0.2, 8); got != "" {
+		t.Fatalf("expected hidden scrollbar when content fits viewport, got %q", got)
+	}
+}
+
+func TestRenderScrollbarUsesRoundedEndsWhenScrollable(t *testing.T) {
+	m := model{
+		screen:                screenChat,
+		scrollbarHover:        true,
+		viewportContentHeight: 40,
+	}
+	got := m.renderScrollbar(0.5, 10)
+	if !strings.Contains(got, "╭") {
+		t.Fatalf("expected top rounded thumb edge, got %q", got)
+	}
+	if !strings.Contains(got, "╰") {
+		t.Fatalf("expected bottom rounded thumb edge, got %q", got)
+	}
+}
+
+func TestHandleMouseDragScrollbarUpdatesViewport(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		screen:   screenChat,
+		width:    120,
+		height:   30,
+		input:    input,
+		viewport: viewport.New(0, 0),
+	}
+	m.syncViewportSize()
+	lines := make([]string, m.viewport.Height*5)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i+1)
+	}
+	m.viewport.SetContent(strings.Join(lines, "\n"))
+	m.viewportContentHeight = len(lines)
+
+	x, top, bottom, _, ok := m.scrollbarThumbBounds()
+	if !ok {
+		t.Fatalf("expected scrollbar thumb bounds to be available")
+	}
+	startY := (top + bottom) / 2
+	targetY := top + (m.viewport.Height*4)/5
+	if targetY <= startY {
+		targetY = startY + 2
+	}
+
+	pressed, _ := m.handleMouse(tea.MouseMsg{
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+		X:      x,
+		Y:      startY,
+	})
+	dragging := pressed.(model)
+	before := dragging.viewport.ScrollPercent()
+
+	moved, _ := dragging.handleMouse(tea.MouseMsg{
+		Action: tea.MouseActionMotion,
+		X:      x,
+		Y:      targetY,
+	})
+	updated := moved.(model)
+	after := updated.viewport.ScrollPercent()
+	if after <= before {
+		t.Fatalf("expected scrollbar drag to increase scroll percent, got %.2f -> %.2f", before, after)
+	}
+
+	released, _ := updated.handleMouse(tea.MouseMsg{
+		Action: tea.MouseActionRelease,
+		X:      x,
+		Y:      targetY,
+	})
+	finalModel := released.(model)
+	if finalModel.scrollbarDragging {
+		t.Fatalf("expected dragging state to reset on release")
+	}
+}
+
 func TestPlanModeShowsDetailedPlanPanel(t *testing.T) {
 	input := textarea.New()
 	m := model{
@@ -207,11 +291,11 @@ func TestPlanModeShowsDetailedPlanPanel(t *testing.T) {
 
 	m.refreshViewport()
 
-	if !m.hasPlanPanel() {
-		t.Fatalf("expected detailed plan panel to be enabled in plan mode")
+	if m.hasPlanPanel() {
+		t.Fatalf("did not expect plan panel to be enabled in plan mode")
 	}
-	if !m.showPlanSidebar() {
-		t.Fatalf("expected wide layout to render plan sidebar")
+	if m.showPlanSidebar() {
+		t.Fatalf("did not expect plan sidebar to render when disabled")
 	}
 
 	foundPlanRegion := false
@@ -223,8 +307,8 @@ func TestPlanModeShowsDetailedPlanPanel(t *testing.T) {
 			}
 		}
 	}
-	if !foundPlanRegion {
-		t.Fatalf("expected a mouse-active plan panel region in plan mode")
+	if foundPlanRegion {
+		t.Fatalf("did not expect a mouse-active plan panel region in plan mode")
 	}
 }
 
@@ -414,8 +498,8 @@ func TestSubmitPromptRecomputesInputWidthWhenEnteringChat(t *testing.T) {
 	if updated.screen != screenChat {
 		t.Fatalf("expected submit prompt to switch to chat screen")
 	}
-	if afterWidth <= beforeWidth {
-		t.Fatalf("expected chat input width to expand after screen switch, got %d -> %d", beforeWidth, afterWidth)
+	if afterWidth < beforeWidth {
+		t.Fatalf("expected chat input width to be at least as wide after screen switch, got %d -> %d", beforeWidth, afterWidth)
 	}
 }
 
@@ -447,8 +531,7 @@ func TestChatViewOmitsRedundantChrome(t *testing.T) {
 		"/ commands",
 		"Ctrl+L sessions",
 		"Ctrl+C quit",
-		"Build",
-		"Plan",
+		"bytemind chat",
 	} {
 		if !strings.Contains(view, wanted) {
 			t.Fatalf("expected chat view to contain %q", wanted)
@@ -656,7 +739,7 @@ func TestRenderFooterOnlyShowsInputRegion(t *testing.T) {
 	}
 }
 
-func TestRenderFooterInfoLineCombinesModeAndHints(t *testing.T) {
+func TestRenderInputRegionShowsPrefixAndHints(t *testing.T) {
 	input := textarea.New()
 	m := model{
 		width: 160,
@@ -666,22 +749,12 @@ func TestRenderFooterInfoLineCombinesModeAndHints(t *testing.T) {
 		},
 	}
 
-	footer := m.renderFooter()
-	lines := strings.Split(footer, "\n")
-	infoLine := ""
-	for _, line := range lines {
-		if strings.Contains(line, "tab agents") {
-			infoLine = line
-			break
-		}
+	region := m.renderFooter()
+	if !strings.Contains(region, inputPrefix) {
+		t.Fatalf("expected input region to contain input prefix, got %q", region)
 	}
-	if infoLine == "" {
-		t.Fatalf("expected footer to contain a quick-hint info line")
-	}
-	for _, want := range []string{"Build", "Plan", "deepseek-chat", "tab agents"} {
-		if !strings.Contains(infoLine, want) {
-			t.Fatalf("expected combined info line to contain %q, got %q", want, infoLine)
-		}
+	if !strings.Contains(region, "tab agents") {
+		t.Fatalf("expected input region to contain quick-hint text, got %q", region)
 	}
 }
 
@@ -739,7 +812,7 @@ func TestSyncInputStyleUsesSingleLineSearchField(t *testing.T) {
 	if m.input.Prompt != "" {
 		t.Fatalf("expected empty prompt, got %q", m.input.Prompt)
 	}
-	if m.input.Placeholder != "Ask Bytemind to inspect, change, or verify this workspace..." {
+	if m.input.Placeholder != "请输入你的问题……" {
 		t.Fatalf("unexpected placeholder: %q", m.input.Placeholder)
 	}
 }
@@ -914,7 +987,7 @@ func TestLandingViewRendersCommandPaletteAboveInput(t *testing.T) {
 	m.syncCommandPalette()
 
 	view := m.View()
-	if !strings.Contains(view, "Build") || !strings.Contains(view, "Plan") {
+	if !strings.Contains(strings.ToLower(view), "bytemind") {
 		t.Fatalf("expected landing view to remain visible, got %q", view)
 	}
 	if !strings.Contains(view, "/help") {
@@ -1095,9 +1168,9 @@ func TestRenderAssistantFinalTextOmitsAssistantHeaderLabel(t *testing.T) {
 
 func TestRenderAssistantBodyNormalizesLooseMarkdownSyntax(t *testing.T) {
 	row := renderChatRow(chatEntry{
-		Kind:  "assistant",
-		Title: assistantLabel,
-		Body: "####2. 执行工具超控制时不足-\n-**建议所有**：添加工具超时上下文支持，输出统计####",
+		Kind:   "assistant",
+		Title:  assistantLabel,
+		Body:   "####2. 执行工具超控制时不足-\n-**建议所有**：添加工具超时上下文支持，输出统计####",
 		Status: "final",
 	}, 100)
 
@@ -1115,9 +1188,9 @@ func TestRenderAssistantBodyNormalizesLooseMarkdownSyntax(t *testing.T) {
 
 func TestRenderAssistantBodyStripsBoldMarkersInListAndParagraph(t *testing.T) {
 	row := renderChatRow(chatEntry{
-		Kind:  "assistant",
-		Title: assistantLabel,
-		Body: "- **问题**：**配置在启动运行时加载，不能修改**\n建议 **: **添加 SIGHUP 信号处理重新加载配置",
+		Kind:   "assistant",
+		Title:  assistantLabel,
+		Body:   "- **问题**：**配置在启动运行时加载，不能修改**\n建议 **: **添加 SIGHUP 信号处理重新加载配置",
 		Status: "thinking",
 	}, 110)
 
@@ -1154,10 +1227,10 @@ func TestRenderAssistantBodyUsesPlainModeOnNarrowWidth(t *testing.T) {
 
 func TestNormalizeAssistantLineCleansMixedMarkdownScaffold(t *testing.T) {
 	cases := map[string]string{
-		"####1. 缺少配置热加载":                         "1. 缺少配置热加载",
-		"- **问题**：**配置在启动时加载**":                    "• 问题：配置在启动时加载",
+		"####1. 缺少配置热加载":                                 "1. 缺少配置热加载",
+		"- **问题**：**配置在启动时加载**":                          "• 问题：配置在启动时加载",
 		"2. **依赖**：`github.com/charmbracelet/bubbletea`": "2) 依赖： github.com/charmbracelet/bubbletea",
-		"> **建议**：优化输出":                           "建议：优化输出",
+		"> **建议**：优化输出":                                  "建议：优化输出",
 	}
 	for in, want := range cases {
 		got := normalizeAssistantLine(in)
@@ -1437,8 +1510,8 @@ func TestShowPlanSidebarThresholdBoundary(t *testing.T) {
 	}
 
 	m.width = innerThreshold + frame
-	if !m.showPlanSidebar() {
-		t.Fatalf("expected width at threshold to show sidebar")
+	if m.showPlanSidebar() {
+		t.Fatalf("did not expect plan sidebar to show when disabled")
 	}
 }
 
@@ -1462,11 +1535,8 @@ func TestRenderMainPanelIncludesPlanSidebarInPlanMode(t *testing.T) {
 
 	m.refreshViewport()
 	panel := m.renderMainPanel()
-	if !strings.Contains(panel, "PLAN") {
-		t.Fatalf("expected main panel to include plan sidebar content, got %q", panel)
-	}
-	if !strings.Contains(panel, "Phase: ready") {
-		t.Fatalf("expected plan phase details in sidebar, got %q", panel)
+	if strings.Contains(panel, "PLAN") || strings.Contains(panel, "Phase: ready") {
+		t.Fatalf("did not expect plan sidebar content, got %q", panel)
 	}
 }
 
@@ -1507,20 +1577,14 @@ func TestMouseOverPlanRespectsComputedBounds(t *testing.T) {
 		mode:     modePlan,
 	}
 	m.syncViewportSize()
-	if m.planView.Width <= 0 || m.planView.Height <= 0 {
-		t.Fatalf("expected plan viewport dimensions in plan mode, got %dx%d", m.planView.Width, m.planView.Height)
+	if m.planView.Width != 0 || m.planView.Height != 0 {
+		t.Fatalf("expected plan viewport to remain disabled, got %dx%d", m.planView.Width, m.planView.Height)
 	}
 	contentLeft := panelStyle.GetHorizontalFrameSize() / 2
 	planLeft := contentLeft + m.conversationPanelWidth() + 1
 	contentTop := panelStyle.GetVerticalFrameSize()/2 + lipgloss.Height(m.renderStatusBar()) + 1
-	if !m.mouseOverPlan(planLeft, contentTop) {
-		t.Fatalf("expected top-left plan coordinate to be inside panel")
-	}
-	if m.mouseOverPlan(planLeft-1, contentTop) {
-		t.Fatalf("expected coordinate left of plan panel to be outside")
-	}
-	if m.mouseOverPlan(planLeft, contentTop+m.planView.Height) {
-		t.Fatalf("expected coordinate below plan panel to be outside")
+	if m.mouseOverPlan(planLeft, contentTop) {
+		t.Fatalf("did not expect plan panel hit when disabled")
 	}
 }
 

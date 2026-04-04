@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -46,12 +47,15 @@ const (
 	thinkingLabel        = "Bytemind"
 	chatTitleLabel       = "Bytemind Chat"
 	tuiTitleLabel        = "Bytemind TUI"
-	footerHintText       = "tab agents | / commands | Ctrl+L sessions | Ctrl+C quit"
+	footerHintText       = "tab agents · / commands · Ctrl+L sessions · Ctrl+C quit"
+	inputPrefix          = "> input: "
 	minConversationWidth = 24
 	minCardContentWidth  = 8
 	minPlanContentWidth  = 16
 	enablePlanPanel      = true
 	planSidebarMinWidth  = 104
+	scrollbarWidth       = 1
+	minScrollbarThumb    = 2
 )
 
 type screenKind string
@@ -171,6 +175,11 @@ type model struct {
 	inputBurstSize int
 	chatAutoFollow bool
 	preserveFormat bool
+
+	scrollbarDragging     bool
+	scrollbarHover        bool
+	scrollbarDragOffset   int
+	viewportContentHeight int
 }
 
 func newModel(opts Options) model {
@@ -235,6 +244,9 @@ func newModel(opts Options) model {
 		phase:          "idle",
 		llmConnected:   true,
 		chatAutoFollow: true,
+	}
+	if m.mode == "" {
+		m.mode = modeBuild
 	}
 	m.syncInputStyle()
 	m.syncCommandPalette()
@@ -326,6 +338,12 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.screen == screenChat && m.sessionsOpen {
 		return m, nil
 	}
+	if msg.Action == tea.MouseActionRelease {
+		m.scrollbarDragging = false
+		if !m.mouseOverScrollbar(msg.X, msg.Y) {
+			m.scrollbarHover = false
+		}
+	}
 	if m.mouseOverInput(msg.Y) {
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
@@ -339,6 +357,38 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.screen == screenChat {
+		if msg.Action == tea.MouseActionMotion {
+			m.scrollbarHover = m.mouseOverScrollbar(msg.X, msg.Y)
+			if m.scrollbarDragging {
+				m.dragScrollbarTo(msg.Y)
+				m.chatAutoFollow = m.viewport.AtBottom()
+				return m, nil
+			}
+		}
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if m.mouseOverScrollbarThumb(msg.X, msg.Y) {
+				_, thumbTop, _, _, ok := m.scrollbarThumbBounds()
+				if ok {
+					m.scrollbarDragging = true
+					m.scrollbarHover = true
+					m.scrollbarDragOffset = max(0, msg.Y-thumbTop)
+					m.dragScrollbarTo(msg.Y)
+					m.chatAutoFollow = m.viewport.AtBottom()
+					return m, nil
+				}
+			}
+			if m.mouseOverScrollbar(msg.X, msg.Y) {
+				metrics := m.scrollbarMetrics(m.viewport.ScrollPercent(), m.viewport.Height)
+				if metrics.visible {
+					m.scrollbarDragging = true
+					m.scrollbarHover = true
+					m.scrollbarDragOffset = max(0, metrics.thumbHeight/2)
+					m.dragScrollbarTo(msg.Y)
+					m.chatAutoFollow = m.viewport.AtBottom()
+					return m, nil
+				}
+			}
+		}
 		if m.mouseOverPlan(msg.X, msg.Y) {
 			m.ensurePlanMouse()
 			switch msg.Button {
@@ -358,15 +408,18 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
 			m.viewport.LineUp(scrollStep)
+			m.scrollbarHover = true
 			m.chatAutoFollow = false
 			return m, nil
 		case tea.MouseButtonWheelDown:
 			m.viewport.LineDown(scrollStep)
+			m.scrollbarHover = true
 			m.chatAutoFollow = m.viewport.AtBottom()
 			return m, nil
 		default:
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
+			m.scrollbarHover = m.scrollbarHover && m.mouseOverScrollbar(msg.X, msg.Y)
 			m.chatAutoFollow = m.viewport.AtBottom()
 			return m, cmd
 		}
@@ -386,6 +439,112 @@ func (m *model) ensurePlanMouse() {
 	if m.planView.MouseWheelDelta <= 0 {
 		m.planView.MouseWheelDelta = scrollStep
 	}
+}
+
+type scrollbarLayout struct {
+	visible     bool
+	thumbTop    int
+	thumbHeight int
+	thumbTravel int
+}
+
+func (m model) scrollbarMetrics(scrollPercent float64, viewHeight int) scrollbarLayout {
+	if viewHeight <= 0 || m.viewportContentHeight <= viewHeight {
+		return scrollbarLayout{}
+	}
+	ratio := float64(viewHeight) / float64(m.viewportContentHeight)
+	thumbHeight := int(math.Round(ratio * float64(viewHeight)))
+	thumbHeight = clamp(thumbHeight, minScrollbarThumb, viewHeight)
+	travel := max(0, viewHeight-thumbHeight)
+	scrollPercent = clampFloat(scrollPercent, 0, 1)
+	thumbTop := 0
+	if travel > 0 {
+		thumbTop = int(math.Round(scrollPercent * float64(travel)))
+	}
+	return scrollbarLayout{
+		visible:     true,
+		thumbTop:    clamp(thumbTop, 0, travel),
+		thumbHeight: thumbHeight,
+		thumbTravel: travel,
+	}
+}
+
+func (m model) conversationRect() (left, right, top, bottom int, ok bool) {
+	if m.screen != screenChat || m.viewport.Width <= 0 || m.viewport.Height <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	left = panelStyle.GetHorizontalFrameSize() / 2
+	right = left + m.viewport.Width - 1
+	top = panelStyle.GetVerticalFrameSize()/2 + lipgloss.Height(m.renderStatusBar()) + 1
+	bottom = top + m.viewport.Height - 1
+	return left, right, top, bottom, true
+}
+
+func (m model) scrollbarBounds() (x, top, bottom int, ok bool) {
+	_, right, contentTop, contentBottom, ok := m.conversationRect()
+	if !ok {
+		return 0, 0, 0, false
+	}
+	layout := m.scrollbarMetrics(m.viewport.ScrollPercent(), m.viewport.Height)
+	if !layout.visible {
+		return 0, 0, 0, false
+	}
+	return right + 1, contentTop, contentBottom, true
+}
+
+func (m model) scrollbarThumbBounds() (x, top, bottom int, layout scrollbarLayout, ok bool) {
+	scrollbarX, trackTop, _, ok := m.scrollbarBounds()
+	if !ok {
+		return 0, 0, 0, scrollbarLayout{}, false
+	}
+	layout = m.scrollbarMetrics(m.viewport.ScrollPercent(), m.viewport.Height)
+	if !layout.visible {
+		return 0, 0, 0, scrollbarLayout{}, false
+	}
+	top = trackTop + layout.thumbTop
+	bottom = top + layout.thumbHeight - 1
+	return scrollbarX, top, bottom, layout, true
+}
+
+func (m model) mouseOverScrollbar(x, y int) bool {
+	scrollbarX, top, bottom, ok := m.scrollbarBounds()
+	if !ok {
+		return false
+	}
+	return x == scrollbarX && y >= top && y <= bottom
+}
+
+func (m model) mouseOverScrollbarThumb(x, y int) bool {
+	scrollbarX, top, bottom, _, ok := m.scrollbarThumbBounds()
+	if !ok {
+		return false
+	}
+	return x == scrollbarX && y >= top && y <= bottom
+}
+
+func (m *model) dragScrollbarTo(mouseY int) {
+	scrollbarX, trackTop, _, layout, ok := m.scrollbarThumbBounds()
+	if !ok || scrollbarX < 0 {
+		return
+	}
+	desiredTop := mouseY - trackTop - m.scrollbarDragOffset
+	desiredTop = clamp(desiredTop, 0, layout.thumbTravel)
+	percent := 0.0
+	if layout.thumbTravel > 0 {
+		percent = float64(desiredTop) / float64(layout.thumbTravel)
+	}
+	maxOffset := max(0, m.viewportContentHeight-m.viewport.Height)
+	m.viewport.SetYOffset(int(math.Round(percent * float64(maxOffset))))
+}
+
+func clampFloat(value, low, high float64) float64 {
+	if value < low {
+		return low
+	}
+	if value > high {
+		return high
+	}
+	return value
 }
 
 func normalizeKeyName(key string) string {
@@ -442,15 +601,13 @@ func (m model) mouseOverPlan(x, y int) bool {
 }
 
 func (m model) mouseOverChatInput(y int) bool {
-	if m.width <= 0 {
+	if m.width <= 0 || m.height <= 0 {
 		return false
 	}
-	footerTop := panelStyle.GetVerticalFrameSize()/2 + lipgloss.Height(m.renderMainPanel())
-	inputHeight := lipgloss.Height(
-		m.inputBorderStyle().
-			Width(m.chatPanelInnerWidth()).
-			Render(m.input.View()),
-	)
+	topBorder := panelStyle.GetVerticalFrameSize() / 2
+	headerHeight := lipgloss.Height(m.renderStatusBar()) + 1
+	footerTop := topBorder + headerHeight + m.viewport.Height + 1
+	inputHeight := lipgloss.Height(m.renderInputLine())
 	inputTop := footerTop
 	if m.approval != nil {
 		inputTop += lipgloss.Height(m.renderApprovalBanner())
@@ -463,43 +620,35 @@ func (m model) mouseOverChatInput(y int) bool {
 }
 
 func (m model) mouseOverLandingInput(y int) bool {
-	if m.height <= 0 {
+	if m.width <= 0 || m.height <= 0 {
 		return false
 	}
-	logoHeight := lipgloss.Height(landingLogoStyle.Render(strings.Join([]string{
-		"    ____        __                      _           __",
-		"   / __ )__  __/ /____  ____ ___  ____(_)___  ____/ /",
-		"  / __  / / / / __/ _ \\/ __ `__ \\/ __/ / __ \\/ __  / ",
-		" / /_/ / /_/ / /_/  __/ / / / / / /_/ / / / / /_/ /  ",
-		"/_____/\\__, /\\__/\\___/_/ /_/ /_/\\__/_/_/ /_/\\__,_/   ",
-		"      /____/                                          ",
-	}, "\n")))
-	titleHeight := 0
-	subtitleHeight := 0
-	inputHeight := lipgloss.Height(
-		landingInputStyle.Copy().
-			BorderForeground(m.modeAccentColor()).
-			Width(m.landingInputShellWidth()).
-			Render(m.input.View()),
-	)
-	hintHeight := lipgloss.Height(mutedStyle.Render(footerHintText))
-	contentHeight := logoHeight + 1 + titleHeight + subtitleHeight + 1 + inputHeight + 1 + hintHeight
-	contentTop := max(0, (m.height-contentHeight)/2)
-	inputTop := contentTop + logoHeight + 1 + titleHeight + subtitleHeight + 1
-	inputBottom := inputTop + max(1, inputHeight) - 1
+	bodyHeight := max(1, m.height-1)
+	logoHeight := lipgloss.Height(m.renderLandingLogoV2(m.landingInputShellWidth()))
+	bottomHeight := lipgloss.Height(m.renderLandingBottom())
+	stackHeight := logoHeight + 1 + bottomHeight
+	stackTop := max(0, (bodyHeight-stackHeight)/2)
+	inputTop := stackTop + logoHeight + 1
+	if m.commandOpen {
+		inputTop += lipgloss.Height(m.renderCommandPalette())
+	}
+	inputHeight := lipgloss.Height(m.renderLandingInputBox())
+	inputBottom := inputTop + inputHeight - 1
 	return y >= inputTop && y <= inputBottom
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyTab {
+		m.toggleMode()
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		if m.approval != nil {
 			m.approval.Reply <- approvalDecision{Approved: false}
 		}
 		return m, tea.Quit
-	case "tab":
-		m.toggleMode()
-		return m, nil
 	case "ctrl+g":
 		if m.approval == nil {
 			m.helpOpen = !m.helpOpen
@@ -580,6 +729,30 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		m.chatAutoFollow = true
 		return m, nil
+	case "ctrl+up":
+		m.viewport.LineUp(scrollStep)
+		m.scrollbarHover = true
+		m.chatAutoFollow = false
+		return m, nil
+	case "ctrl+down":
+		m.viewport.LineDown(scrollStep)
+		m.scrollbarHover = true
+		m.chatAutoFollow = m.viewport.AtBottom()
+		return m, nil
+	case "up":
+		if m.screen == screenChat && strings.TrimSpace(m.input.Value()) == "" {
+			m.viewport.LineUp(1)
+			m.scrollbarHover = true
+			m.chatAutoFollow = false
+			return m, nil
+		}
+	case "down":
+		if m.screen == screenChat && strings.TrimSpace(m.input.Value()) == "" {
+			m.viewport.LineDown(1)
+			m.scrollbarHover = true
+			m.chatAutoFollow = m.viewport.AtBottom()
+			return m, nil
+		}
 	}
 
 	if m.busy {
@@ -1100,12 +1273,18 @@ func (m *model) refreshViewport() {
 	m.syncViewportSize()
 	chatOffset := m.viewport.YOffset
 	keepChatBottom := m.chatAutoFollow || m.viewport.AtBottom()
-	m.viewport.SetContent(m.renderConversation())
+	content := m.renderConversation()
+	m.viewportContentHeight = lipgloss.Height(content)
+	m.viewport.SetContent(content)
 	if keepChatBottom {
 		m.viewport.GotoBottom()
 		m.chatAutoFollow = true
 	} else {
 		m.viewport.SetYOffset(chatOffset)
+	}
+	if !m.scrollbarMetrics(m.viewport.ScrollPercent(), m.viewport.Height).visible {
+		m.scrollbarDragging = false
+		m.scrollbarHover = false
 	}
 
 	if m.hasPlanPanel() {
@@ -1121,7 +1300,7 @@ func (m *model) refreshViewport() {
 func (m *model) syncLayoutForCurrentScreen() {
 	if m.width > 0 {
 		if m.screen == screenLanding {
-			m.input.SetWidth(m.landingInputContentWidth())
+			m.input.SetWidth(m.chatInputContentWidth())
 		} else {
 			m.input.SetWidth(m.chatInputContentWidth())
 		}
@@ -1140,7 +1319,7 @@ func (m *model) resize() {
 func (m model) View() string {
 	if m.width > 0 {
 		if m.screen == screenLanding {
-			m.input.SetWidth(m.landingInputContentWidth())
+			m.input.SetWidth(m.chatInputContentWidth())
 			m.syncInputStyle()
 		} else {
 			m.input.SetWidth(m.chatInputContentWidth())
@@ -1149,8 +1328,7 @@ func (m model) View() string {
 	}
 	base := m.renderLanding()
 	if m.screen == screenChat {
-		chatContent := lipgloss.JoinVertical(lipgloss.Left, m.renderMainPanel(), m.renderFooter())
-		base = panelStyle.Width(m.chatPanelWidth()).Render(chatContent)
+		base = panelStyle.Width(m.chatPanelWidth()).Render(m.renderChatShell())
 	}
 
 	switch {
@@ -1195,13 +1373,9 @@ func (m *model) syncViewportSize() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	footerHeight := lipgloss.Height(m.renderFooter())
-	bodyHeight := m.height - footerHeight
-	if bodyHeight < 6 {
-		bodyHeight = 6
-	}
-	statusHeight := lipgloss.Height(m.renderStatusBar())
-	panelInnerHeight := max(4, bodyHeight-panelStyle.GetVerticalFrameSize()-statusHeight-1)
+	headerHeight := lipgloss.Height(m.renderStatusBar()) + 1
+	footerHeight := lipgloss.Height(m.renderInputRegion()) + 1
+	panelInnerHeight := max(4, m.height-panelStyle.GetVerticalFrameSize()-headerHeight-footerHeight)
 	contentHeight := max(3, panelInnerHeight)
 	if m.hasPlanPanel() {
 		m.planView.Width = m.planPanelWidth()
@@ -1210,75 +1384,125 @@ func (m *model) syncViewportSize() {
 		m.planView.Width = 0
 		m.planView.Height = 0
 	}
-	m.viewport.Width = m.conversationPanelWidth()
+	conversationWidth := m.conversationPanelWidth()
+	if conversationWidth > minConversationWidth {
+		conversationWidth -= scrollbarWidth
+	}
+	m.viewport.Width = max(minConversationWidth, conversationWidth)
 	m.viewport.Height = contentHeight
 }
 
 func (m model) renderMainPanel() string {
-	statusBar := m.renderStatusBar()
 	conversation := m.viewport.View()
+	scrollbar := m.renderScrollbar(m.viewport.ScrollPercent(), m.viewport.Height)
+	if scrollbar == "" && m.viewport.Height > 0 {
+		scrollbar = lipgloss.NewStyle().Width(scrollbarWidth).Height(m.viewport.Height).Render("")
+	}
+	conversationWithScrollbar := lipgloss.JoinHorizontal(lipgloss.Top, conversation, scrollbar)
 	if !m.showPlanSidebar() {
-		return lipgloss.JoinVertical(lipgloss.Left, statusBar, "", conversation)
+		return conversationWithScrollbar
 	}
 	content := lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		conversation,
+		conversationWithScrollbar,
 		spacer(1),
 		m.renderPlanPanel(m.planPanelWidth()),
 	)
-	return lipgloss.JoinVertical(lipgloss.Left, statusBar, "", content)
+	return content
+}
+
+func (m model) renderScrollbar(scrollPercent float64, viewHeight int) string {
+	layout := m.scrollbarMetrics(scrollPercent, viewHeight)
+	if !layout.visible || viewHeight <= 0 {
+		return ""
+	}
+	thumbStyle := scrollbarThumbIdleStyle
+	if m.scrollbarHover || m.scrollbarDragging {
+		thumbStyle = scrollbarThumbActiveStyle
+	}
+	lines := make([]string, 0, viewHeight)
+	for row := 0; row < viewHeight; row++ {
+		inThumb := row >= layout.thumbTop && row < layout.thumbTop+layout.thumbHeight
+		if !inThumb {
+			lines = append(lines, scrollbarTrackStyle.Render("│"))
+			continue
+		}
+		thumbChar := "┃"
+		if layout.thumbHeight > 2 {
+			switch row {
+			case layout.thumbTop:
+				thumbChar = "╭"
+			case layout.thumbTop + layout.thumbHeight - 1:
+				thumbChar = "╰"
+			}
+		}
+		lines = append(lines, thumbStyle.Render(thumbChar))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m model) renderLanding() string {
-	logo := landingLogoStyle.Render(strings.Join([]string{
-		"    ____        __                      _           __",
-		"   / __ )__  __/ /____  ____ ___  ____(_)___  ____/ /",
-		"  / __  / / / / __/ _ \\/ __ `__ \\/ __/ / __ \\/ __  / ",
-		" / /_/ / /_/ / /_/  __/ / / / / / /_/ / / / / /_/ /  ",
-		"/_____/\\__, /\\__/\\___/_/ /_/ /_/\\__/_/_/ /_/\\__,_/   ",
-		"      /____/                                          ",
-	}, "\n"))
-	inputBox := landingInputStyle.Copy().
-		BorderForeground(m.modeAccentColor()).
-		Width(m.landingInputShellWidth()).
-		Render(m.input.View())
-	parts := []string{logo, "", m.renderModeTabs(), ""}
-	if m.commandOpen {
-		parts = append(parts, m.renderCommandPalette(), "")
+	width := max(minConversationWidth, m.width)
+	bodyHeight := max(1, m.height-1)
+
+	logo := m.renderLandingLogoV2(m.landingInputShellWidth())
+	bottom := m.renderLandingBottom()
+	stack := lipgloss.JoinVertical(lipgloss.Center, logo, "", bottom)
+	center := lipgloss.Place(width, bodyHeight, lipgloss.Center, lipgloss.Center, stack)
+	tip := m.renderLandingTip(width)
+	return landingCanvasStyle.Width(width).Height(max(1, m.height)).Render(
+		lipgloss.JoinVertical(lipgloss.Left, center, tip),
+	)
+}
+
+func (m model) renderLandingLogo(width int) string {
+	art := []string{
+		"██████╗ ██╗   ██╗████████╗███████╗███╗   ███╗██╗███╗   ██╗██████╗ ",
+		"██╔══██╗╚██╗ ██╔╝╚══██╔══╝██╔════╝████╗ ████║██║████╗  ██║██╔══██╗",
+		"██████╔╝ ╚████╔╝    ██║   █████╗  ██╔████╔██║██║██╔██╗ ██║██║  ██║",
+		"██╔══██╗  ╚██╔╝     ██║   ██╔══╝  ██║╚██╔╝██║██║██║╚██╗██║██║  ██║",
+		"██████╔╝   ██║      ██║   ███████╗██║ ╚═╝ ██║██║██║ ╚████║██████╔╝",
+		"╚═════╝    ╚═╝      ╚═╝   ╚══════╝╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚═════╝ ",
 	}
-	parts = append(parts, inputBox, "", mutedStyle.Render(footerHintText))
-	content := lipgloss.JoinVertical(lipgloss.Center, parts...)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+	return landingLogoStyle.Copy().
+		Width(width).
+		Padding(0, 0, 2, 0).
+		Render(strings.Join(art, "\n"))
 }
 
 func (m model) renderFooter() string {
-	inputBorder := m.inputBorderStyle().
-		Width(m.chatPanelInnerWidth()).
-		Render(m.input.View())
-	parts := make([]string, 0, 4)
-	if m.approval != nil {
-		parts = append(parts, m.renderApprovalBanner())
+	return m.renderInputRegion()
+}
+
+func (m model) renderLandingLogoV2(width int) string {
+	art := []string{
+		"██████╗ ██╗   ██╗████████╗███████╗███╗   ███╗██╗███╗   ██╗██████╗ ",
+		"██╔══██╗╚██╗ ██╔╝╚══██╔══╝██╔════╝████╗ ████║██║████╗  ██║██╔══██╗",
+		"██████╔╝ ╚████╔╝    ██║   █████╗  ██╔████╔██║██║██╔██╗ ██║██║  ██║",
+		"██╔══██╗  ╚██╔╝     ██║   ██╔══╝  ██║╚██╔╝██║██║██║╚██╗██║██║  ██║",
+		"██████╔╝   ██║      ██║   ███████╗██║ ╚═╝ ██║██║██║ ╚████║██████╔╝",
+		"╚═════╝    ╚═╝      ╚═╝   ╚══════╝╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚═════╝ ",
 	}
-	if m.commandOpen {
-		parts = append(parts, m.renderCommandPalette())
-	}
-	parts = append(parts, inputBorder, m.renderFooterInfoLine())
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return landingLogoStyle.Copy().
+		Width(width).
+		Padding(0, 0, 2, 0).
+		Render(strings.Join(art, "\n"))
 }
 
 func (m model) renderModeTabs() string {
-	buildStyle := modeTabStyle.Copy().Foreground(colorMuted)
-	planStyle := modeTabStyle.Copy().Foreground(colorMuted)
+	buildStyle := modeInactiveStyle.Copy().Padding(0, 1)
+	planStyle := modeInactiveStyle.Copy().Padding(0, 1)
 	if m.mode == modeBuild {
-		buildStyle = buildStyle.Copy().Foreground(colorAccent).Bold(true)
+		buildStyle = modeBuildActiveStyle.Copy().Padding(0, 1)
 	} else {
-		planStyle = planStyle.Copy().Foreground(colorThinking).Bold(true)
+		planStyle = modePlanActiveStyle.Copy().Padding(0, 1)
 	}
-	parts := []string{
-		buildStyle.Render("Build"),
-		planStyle.Render("Plan"),
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Left, parts...)
+	return lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		buildStyle.Render("■ Build"),
+		" ",
+		planStyle.Render("■ Plan"),
+	)
 }
 
 func (m model) renderFooterInfoLine() string {
@@ -1305,6 +1529,126 @@ func (m model) renderFooterInfoLine() string {
 	}
 
 	return lipgloss.NewStyle().Width(width).Render(left + strings.Repeat(" ", gap) + right)
+}
+
+func (m model) renderDivider() string {
+	return ""
+}
+
+func (m model) renderInputLine() string {
+	width := max(minConversationWidth, m.chatPanelInnerWidth())
+	prefix := mutedStyle.Render(inputPrefix)
+	prefixWidth := runewidth.StringWidth(inputPrefix)
+	inputWidth := max(12, width-prefixWidth)
+	m.input.SetWidth(inputWidth)
+	view := m.input.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) == 0 {
+		return lipgloss.NewStyle().Width(width).Render(prefix)
+	}
+	lines[0] = prefix + lines[0]
+	if len(lines) > 1 {
+		indent := strings.Repeat(" ", prefixWidth)
+		for i := 1; i < len(lines); i++ {
+			lines[i] = indent + lines[i]
+		}
+	}
+	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func (m model) renderInputRegion() string {
+	parts := make([]string, 0, 4)
+	if m.approval != nil {
+		parts = append(parts, m.renderApprovalBanner())
+	}
+	if m.commandOpen {
+		parts = append(parts, m.renderCommandPalette())
+	}
+	hint := footerHintStyle.Copy().
+		Width(max(minConversationWidth, m.chatPanelInnerWidth())).
+		Align(lipgloss.Right).
+		Render(m.footerHintV2())
+	parts = append(parts, m.renderInputLine(), hint)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+func (m model) renderLandingInputBox() string {
+	width := m.landingInputShellWidth()
+	contentWidth := max(12, width-landingInputStyle.GetHorizontalFrameSize())
+	m.input.SetWidth(contentWidth)
+
+	lineOne := landingPlaceholderStyle.Render(`Ask anything... "What is the tech stack?"`)
+	if strings.TrimSpace(m.input.Value()) != "" {
+		lineOne = landingInputValueStyle.Render(strings.TrimSpace(strings.ReplaceAll(m.input.Value(), "\n", " ")))
+	}
+
+	modelLabel := strings.TrimSpace(m.currentModelLabel())
+	if modelLabel == "" || modelLabel == "-" {
+		modelLabel = "deepseek-reasoner"
+	}
+	modeLabel := "Build"
+	modeStyle := modeBuildActiveStyle
+	if m.mode == modePlan {
+		modeLabel = "Plan"
+		modeStyle = modePlanActiveStyle
+	}
+	meta := lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		modeStyle.Render("■ "+modeLabel),
+		"  ",
+		landingModelStyle.Render(modelLabel),
+	)
+	content := lipgloss.JoinVertical(lipgloss.Left, lineOne, "", meta)
+	return landingInputStyle.Width(width).Render(content)
+}
+
+func (m model) renderLandingBottom() string {
+	width := m.landingInputShellWidth()
+	parts := make([]string, 0, 3)
+	if m.commandOpen {
+		parts = append(parts, m.renderCommandPalette())
+	}
+	parts = append(parts, m.renderLandingInputBox())
+	hint := landingHintStyle.Copy().Width(width).Align(lipgloss.Right).Render(m.footerHintV2())
+	parts = append(parts, hint)
+	return lipgloss.NewStyle().Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+}
+
+func (m model) footerHint() string {
+	if m.mode == modePlan {
+		return "tab build · / commands · Ctrl+L sessions · Ctrl+C quit"
+	}
+	return "tab agents · / commands · Ctrl+L sessions · Ctrl+C quit"
+}
+
+func (m model) footerHintV2() string {
+	if m.mode == modePlan {
+		return "tab build · / commands · Ctrl+L sessions · Ctrl+C quit"
+	}
+	return "tab agents · / commands · Ctrl+L sessions · Ctrl+C quit"
+}
+
+func (m model) renderLandingTip(width int) string {
+	tip := lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		landingTipDotStyle.Render("●"),
+		" ",
+		landingTipLabelStyle.Render("Tip"),
+		" ",
+		landingTipTextStyle.Render("bytemind leverages advanced reasoning for complex tasks"),
+	)
+	return lipgloss.NewStyle().Width(width).Align(lipgloss.Center).Render(tip)
+}
+
+func (m model) renderChatShell() string {
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.renderStatusBar(),
+		"",
+		m.renderMainPanel(),
+		"",
+		m.renderInputRegion(),
+	)
 }
 func (m model) renderSessionsModal() string {
 	lines := []string{modalTitleStyle.Render("Recent Sessions"), mutedStyle.Render("Up/Down to select, Enter to resume, Esc to close"), ""}
@@ -1350,7 +1694,16 @@ func (m model) renderApprovalBanner() string {
 
 func (m model) renderStatusBar() string {
 	width := max(minConversationWidth, m.chatPanelInnerWidth())
-	left := strings.ToLower(chatTitleLabel)
+	modeLabel := modeBuildActiveStyle.Render("■ Build")
+	if m.mode == modePlan {
+		modeLabel = modePlanActiveStyle.Render("■ Plan")
+	}
+	left := lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		modeLabel,
+		"  ",
+		mutedStyle.Render(strings.ToLower(chatTitleLabel)),
+	)
 	rightParts := []string{fmt.Sprintf("%d msgs", len(m.chatItems))}
 	if phase := strings.TrimSpace(m.currentPhaseLabel()); phase != "" && phase != "idle" && phase != "none" {
 		rightParts = append([]string{"phase: " + phase}, rightParts...)
@@ -1358,10 +1711,14 @@ func (m model) renderStatusBar() string {
 	if model := strings.TrimSpace(m.currentModelLabel()); model != "" && model != "-" {
 		rightParts = append(rightParts, model)
 	}
-	right := strings.Join(rightParts, "  ·  ")
-
-	line := m.renderTopInfoLine(left, right, width)
-	return statusBarStyle.Width(width).Render(line)
+	right := footerHintStyle.Render(strings.Join(rightParts, "  |  "))
+	leftW := lipgloss.Width(left)
+	rightW := lipgloss.Width(right)
+	gap := width - leftW - rightW
+	if gap < 2 {
+		return statusBarStyle.Width(width).Render(compact(strings.ToLower(chatTitleLabel)+"  "+strings.Join(rightParts, "  |  "), width))
+	}
+	return statusBarStyle.Width(width).Render(left + strings.Repeat(" ", gap) + right)
 }
 
 func (m model) renderTopInfoLine(left, right string, width int) string {
@@ -2413,24 +2770,24 @@ func shouldExecuteFromPalette(item commandItem) bool {
 
 func (m model) helpText() string {
 	return strings.Join([]string{
-		"Entry points",
-		"Run `go run ./cmd/bytemind chat` from the repository root to open the TUI.",
+		helpHeadingStyle.Render("Entry points"),
+		"Run " + helpCodeStyle.Render("go run ./cmd/bytemind chat") + " from the repository root to open the TUI.",
 		"The chat command opens the landing screen first, then enters the conversation view after you submit a prompt.",
-		"Run `go run ./cmd/bytemind run -prompt \"...\"` for one-shot execution.",
+		"Run " + helpCodeStyle.Render(`go run ./cmd/bytemind run -prompt "..."`) + " for one-shot execution.",
 		"",
-		"Slash commands",
+		helpHeadingStyle.Render("Slash commands"),
 		"/help: show this help inside the conversation.",
 		"/session: open recent sessions.",
 		"/new: start a fresh session.",
 		"/quit: exit the TUI.",
 		"",
-		"UI notes",
+		helpHeadingStyle.Render("UI notes"),
 		"Tab toggles between Build and Plan modes.",
-		"Plan mode keeps the plan panel visible and focused on structured steps.",
+		"Plan mode switches to planning context and updates bottom shortcuts.",
 		"Use Ctrl+G to open or close the help panel.",
 		"After restoring a session with a saved plan, type 'continue execution' to resume it.",
 		"Approval requests appear above the input area when a shell command needs confirmation.",
-		"The footer keeps only the essential shortcuts: tab agents, / commands, Ctrl+L sessions, Ctrl+C quit.",
+		"The footer keeps only the essential shortcuts: " + m.footerHintV2(),
 	}, "\n")
 }
 func visibleCommandItems(group string) []commandItem {
@@ -2484,12 +2841,13 @@ func (m model) chatPanelInnerWidth() int {
 }
 
 func (m model) chatInputContentWidth() int {
-	width := m.chatPanelInnerWidth() - m.inputBorderStyle().GetHorizontalFrameSize()
+	prefixWidth := runewidth.StringWidth(inputPrefix)
+	width := m.chatPanelInnerWidth() - prefixWidth
 	return max(18, width)
 }
 
 func (m model) landingInputShellWidth() int {
-	return min(72, max(36, m.width/2))
+	return clamp(m.chatPanelInnerWidth()-8, 56, 116)
 }
 
 func (m model) landingInputContentWidth() int {
@@ -2509,7 +2867,7 @@ func (m model) modeAccentColor() lipgloss.Color {
 }
 
 func (m *model) syncInputStyle() {
-	m.input.Placeholder = "Ask Bytemind to inspect, change, or verify this workspace..."
+	m.input.Placeholder = "请输入你的问题……"
 	m.input.Prompt = ""
 	m.input.SetHeight(2)
 }
@@ -2676,7 +3034,7 @@ func toAgentMode(mode planpkg.AgentMode) agentMode {
 }
 
 func (m model) hasPlanPanel() bool {
-	return enablePlanPanel && m.screen == screenChat && m.mode == modePlan
+	return false
 }
 
 func (m model) showPlanSidebar() bool {

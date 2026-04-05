@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"bytemind/internal/config"
+	"bytemind/internal/history"
 	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
 	"bytemind/internal/session"
@@ -156,6 +157,11 @@ func (r *Runner) GetActiveSkill(sess *session.Session) (skills.Skill, bool) {
 		return skills.Skill{}, false
 	}
 	return r.skillManager.Find(sess.ActiveSkill.Name)
+func (r *Runner) UpdateProvider(providerCfg config.ProviderConfig, client llm.Client) {
+	r.config.Provider = providerCfg
+	if client != nil {
+		r.client = client
+	}
 }
 
 func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput, mode string, out io.Writer) (string, error) {
@@ -204,6 +210,7 @@ func (r *Runner) RunPromptWithInput(ctx context.Context, sess *session.Session, 
 	if err := r.store.Save(sess); err != nil {
 		return "", err
 	}
+	_ = history.AppendPrompt(r.workspace, sess.ID, userInput, time.Now().UTC())
 	r.emit(Event{
 		Type:      EventRunStarted,
 		SessionID: sess.ID,

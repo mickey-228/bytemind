@@ -3,8 +3,10 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"unicode"
 
 	"bytemind/internal/agent"
+	"bytemind/internal/assets"
 	"bytemind/internal/config"
 	"bytemind/internal/llm"
 	"bytemind/internal/mention"
@@ -33,6 +36,7 @@ const (
 	scrollbarWidth      = 1
 	commandPageSize     = 3
 	mentionPageSize     = 5
+	maxPendingBTW       = 5
 	pasteSubmitGuard    = 400 * time.Millisecond
 	assistantLabel      = "Bytemind"
 	thinkingLabel       = "Bytemind"
@@ -98,8 +102,18 @@ type agentEventMsg struct {
 }
 
 type runFinishedMsg struct {
-	Err error
+	RunID int
+	Err   error
 }
+
+type runFinishReason string
+
+const (
+	runFinishReasonCompleted  runFinishReason = "completed"
+	runFinishReasonFailed     runFinishReason = "failed"
+	runFinishReasonCanceled   runFinishReason = "canceled"
+	runFinishReasonBTWRestart runFinishReason = "btw_restart"
+)
 
 type approvalRequestMsg struct {
 	Request tools.ApprovalRequest
@@ -123,17 +137,19 @@ var commandItems = []commandItem{
 	{Name: "/help", Usage: "/help", Description: "Show usage and supported commands.", Kind: "command"},
 	{Name: "/session", Usage: "/session", Description: "Open the recent session list.", Kind: "command"},
 	{Name: "/new", Usage: "/new", Description: "Start a fresh session in this workspace.", Kind: "command"},
+	{Name: "/btw", Usage: "/btw <message>", Description: "Interject while a run is in progress.", Kind: "command"},
 	{Name: "/quit", Usage: "/quit", Description: "Exit the current TUI window.", Kind: "command"},
 	{Name: "/skills", Usage: "/skills", Description: "List available skills and current active skill.", Kind: "command"},
 	{Name: "/skill clear", Usage: "/skill clear", Description: "Clear active skill for this session.", Kind: "command"},
 }
 
 type model struct {
-	runner    *agent.Runner
-	store     *session.Store
-	sess      *session.Session
-	cfg       config.Config
-	workspace string
+	runner     *agent.Runner
+	store      *session.Store
+	sess       *session.Session
+	imageStore assets.ImageStore
+	cfg        config.Config
+	workspace  string
 
 	width  int
 	height int
@@ -184,6 +200,17 @@ type model struct {
 	tokenContext        int
 	tempEstimatedOutput int
 	tokenEstimator      *realtimeTokenEstimator
+	inputImageRefs      map[int]llm.AssetID
+	inputImageMentions  map[string]llm.AssetID
+	orphanedImages      map[llm.AssetID]time.Time
+	nextImageID         int
+	clipboard           clipboardImageReader
+	runCancel           context.CancelFunc
+	pendingBTW          []string
+	interrupting        bool
+	interruptSafe       bool
+	runSeq              int
+	activeRunID         int
 }
 
 func newModel(opts Options) model {
@@ -225,36 +252,43 @@ func newModel(opts Options) model {
 	})
 
 	m := model{
-		runner:         opts.Runner,
-		store:          opts.Store,
-		sess:           opts.Session,
-		cfg:            opts.Config,
-		workspace:      opts.Workspace,
-		async:          async,
-		viewport:       vp,
-		planView:       planVP,
-		input:          input,
-		spinner:        spin,
-		chatItems:      chatItems,
-		toolRuns:       toolRuns,
-		plan:           copyPlanState(opts.Session.Plan),
-		sessions:       nil,
-		sessionLimit:   defaultSessionLimit,
-		screen:         initialScreen(opts.Session),
-		mode:           toAgentMode(opts.Session.Mode),
-		streamingIndex: -1,
-		statusNote:     "Ready.",
-		phase:          "idle",
-		llmConnected:   true,
-		chatAutoFollow: true,
-		mentionIndex:   mention.NewWorkspaceFileIndex(opts.Workspace),
-		tokenUsage:     newTokenUsageComponent(),
-		tokenBudget:    max(1, opts.Config.TokenQuota),
-		tokenEstimator: newRealtimeTokenEstimator(opts.Config.Provider.Model),
+		runner:             opts.Runner,
+		store:              opts.Store,
+		sess:               opts.Session,
+		imageStore:         opts.ImageStore,
+		cfg:                opts.Config,
+		workspace:          opts.Workspace,
+		async:              async,
+		viewport:           vp,
+		planView:           planVP,
+		input:              input,
+		spinner:            spin,
+		chatItems:          chatItems,
+		toolRuns:           toolRuns,
+		plan:               copyPlanState(opts.Session.Plan),
+		sessions:           nil,
+		sessionLimit:       defaultSessionLimit,
+		screen:             initialScreen(opts.Session),
+		mode:               toAgentMode(opts.Session.Mode),
+		streamingIndex:     -1,
+		statusNote:         "Ready.",
+		phase:              "idle",
+		llmConnected:       true,
+		chatAutoFollow:     true,
+		mentionIndex:       mention.NewWorkspaceFileIndex(opts.Workspace),
+		tokenUsage:         newTokenUsageComponent(),
+		tokenBudget:        max(1, opts.Config.TokenQuota),
+		tokenEstimator:     newRealtimeTokenEstimator(opts.Config.Provider.Model),
+		inputImageRefs:     make(map[int]llm.AssetID, 8),
+		inputImageMentions: make(map[string]llm.AssetID, 8),
+		orphanedImages:     make(map[llm.AssetID]time.Time, 8),
+		nextImageID:        nextSessionImageID(opts.Session),
+		clipboard:          defaultClipboardImageReader{},
 	}
 	m.restoreTokenUsageFromSession(opts.Session)
 	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, m.tokenBudget)
 	m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
+	m.ensureSessionImageAssets()
 	m.syncInputStyle()
 	m.syncInputOverlays()
 	if m.mentionIndex != nil {
@@ -294,17 +328,53 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, waitForAsync(m.async)
 	case runFinishedMsg:
+		if msg.RunID > 0 && msg.RunID != m.activeRunID {
+			return m, waitForAsync(m.async)
+		}
 		m.busy = false
-		if msg.Err != nil {
+		m.runCancel = nil
+		m.activeRunID = 0
+		m.interruptSafe = false
+		shouldResumeBTW := m.interrupting && len(m.pendingBTW) > 0
+		m.interrupting = false
+		finishReason := classifyRunFinish(msg.Err, shouldResumeBTW)
+		if shouldResumeBTW {
+			updateScope := formatBTWUpdateScope(len(m.pendingBTW))
+			prompt := composeBTWPrompt(m.pendingBTW)
+			m.pendingBTW = nil
+			note := fmt.Sprintf("BTW accepted. Restarting with %s...", updateScope)
+			if msg.Err != nil && !errors.Is(msg.Err, context.Canceled) {
+				note = fmt.Sprintf("Previous run ended early. Restarting with %s from BTW...", updateScope)
+			}
+			m.appendChat(chatEntry{
+				Kind:   "system",
+				Title:  "System",
+				Body:   fmt.Sprintf("BTW interrupt accepted. Restarting with %s.", updateScope),
+				Status: "final",
+			})
+			return m, m.beginRun(prompt, string(m.mode), note)
+		}
+		m.pendingBTW = nil
+		switch finishReason {
+		case runFinishReasonCompleted:
+			if !m.shouldKeepStreamingIndexOnRunFinished() {
+				m.streamingIndex = -1
+			}
+			m.statusNote = "Ready."
+			m.phase = "idle"
+		case runFinishReasonCanceled:
+			m.streamingIndex = -1
+			m.statusNote = "Run canceled."
+			m.phase = "idle"
+			m.llmConnected = true
+		case runFinishReasonFailed:
 			m.streamingIndex = -1
 			m.statusNote = "Run failed: " + msg.Err.Error()
 			m.phase = "error"
 			m.llmConnected = false
 			m.failLatestAssistant(msg.Err.Error())
-		} else {
-			if !m.shouldKeepStreamingIndexOnRunFinished() {
-				m.streamingIndex = -1
-			}
+		default:
+			m.streamingIndex = -1
 			m.statusNote = "Ready."
 			m.phase = "idle"
 		}
@@ -348,12 +418,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	}
 
-	if !m.busy && !m.sessionsOpen && !m.helpOpen && !m.commandOpen && m.approval == nil {
+	if !m.sessionsOpen && !m.helpOpen && !m.commandOpen && m.approval == nil {
 		before := m.input.Value()
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		if m.input.Value() != before {
-			m.noteInputMutation(before, m.input.Value(), "")
+			m.handleInputMutation(before, m.input.Value(), "")
 			m.syncInputOverlays()
 		}
 		return m, cmd
@@ -578,6 +648,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.approval != nil {
 			m.approval.Reply <- approvalDecision{Approved: false}
 		}
+		if m.runCancel != nil {
+			m.runCancel()
+		}
 		return m, tea.Quit
 	case "tab":
 		if m.commandOpen || m.mentionOpen || m.sessionsOpen || m.helpOpen || m.approval != nil {
@@ -654,6 +727,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.sessionsOpen = true
 		}
 		return m, m.loadSessionsCmd()
+	case "alt+v":
+		if !m.busy {
+			if note := m.handleEmptyClipboardPaste(); strings.TrimSpace(note) != "" {
+				m.statusNote = note
+			}
+			m.syncInputOverlays()
+		}
+		return m, nil
 	case "ctrl+n":
 		if !m.busy && m.screen == screenChat {
 			if err := m.newSession(); err != nil {
@@ -671,16 +752,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.busy {
-		return m, nil
-	}
-
 	if msg.Type == tea.KeyEnter && msg.Alt {
 		before := m.input.Value()
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		if m.input.Value() != before {
-			m.noteInputMutation(before, m.input.Value(), "alt+enter")
+			m.handleInputMutation(before, m.input.Value(), "alt+enter")
 			m.syncInputOverlays()
 		}
 		return m, cmd
@@ -692,7 +769,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			if m.input.Value() != before {
-				m.noteInputMutation(before, m.input.Value(), "paste-enter")
+				m.handleInputMutation(before, m.input.Value(), "paste-enter")
 				m.syncInputOverlays()
 			}
 			return m, cmd
@@ -700,6 +777,27 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		value := strings.TrimSpace(m.input.Value())
 		if value == "" {
 			return m, nil
+		}
+		if isBTWCommand(value) {
+			btw, err := extractBTWText(value)
+			if err != nil {
+				m.statusNote = err.Error()
+				return m, nil
+			}
+			if m.busy {
+				return m.submitBTW(btw)
+			}
+			return m.submitPrompt(btw)
+		}
+		if value == "/quit" {
+			return m, tea.Quit
+		}
+		if m.busy {
+			if strings.HasPrefix(value, "/") {
+				m.statusNote = "This command is unavailable while a run is in progress. Use /btw <message> or plain text."
+				return m, nil
+			}
+			return m.submitBTW(value)
 		}
 		if isContinueExecutionInput(value) && planpkg.HasStructuredPlan(m.plan) {
 			state, err := preparePlanForContinuation(m.plan)
@@ -720,9 +818,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		if value == "/quit" {
-			return m, tea.Quit
-		}
 		if strings.HasPrefix(value, "/") {
 			m.input.Reset()
 			next, cmd, err := m.executeCommand(value)
@@ -738,8 +833,26 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	before := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	if m.input.Value() != before {
-		m.noteInputMutation(before, m.input.Value(), msg.String())
+	after := m.input.Value()
+	if after != before {
+		m.handleInputMutation(before, after, msg.String())
+		after = m.input.Value()
+	}
+	triggerClipboardImagePaste := shouldTriggerClipboardImagePaste(before, after, msg.String())
+	if !triggerClipboardImagePaste && msg.Paste {
+		_, inserted, _ := insertionDiff(before, after)
+		cleanInserted := strings.TrimSpace(strings.ReplaceAll(inserted, ctrlVMarkerRune, ""))
+		if cleanInserted == "" {
+			triggerClipboardImagePaste = true
+		}
+	}
+	if triggerClipboardImagePaste {
+		if cleaned, changed := stripCtrlVMarker(m.input.Value()); changed {
+			m.setInputValue(cleaned)
+		}
+		if note := m.handleEmptyClipboardPaste(); strings.TrimSpace(note) != "" {
+			m.statusNote = note
+		}
 	}
 	m.syncInputOverlays()
 	return m, cmd
@@ -785,6 +898,23 @@ func (m model) handleCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.closeCommandPalette()
 				return m, tea.Quit
 			}
+			if m.busy {
+				if isBTWCommand(value) {
+					btw, err := extractBTWText(value)
+					if err != nil {
+						m.statusNote = err.Error()
+						return m, nil
+					}
+					m.closeCommandPalette()
+					return m.submitBTW(btw)
+				}
+				if strings.HasPrefix(value, "/") {
+					m.statusNote = "This command is unavailable while a run is in progress. Use /btw <message>."
+					return m, nil
+				}
+				m.closeCommandPalette()
+				return m.submitBTW(value)
+			}
 			m.closeCommandPalette()
 			m.input.Reset()
 			next, cmd, err := m.executeCommand(value)
@@ -798,6 +928,10 @@ func (m model) handleCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if shouldExecuteFromPalette(selected) || selected.Name == "/continue" {
 			if selected.Name == "/quit" {
 				return m, tea.Quit
+			}
+			if m.busy {
+				m.statusNote = "This command is unavailable while a run is in progress. Use /btw <message>."
+				return m, nil
 			}
 			m.input.Reset()
 			next, cmd, err := m.executeCommand(selected.Name)
@@ -816,7 +950,7 @@ func (m model) handleCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	if m.input.Value() != before {
-		m.noteInputMutation(before, m.input.Value(), msg.String())
+		m.handleInputMutation(before, m.input.Value(), msg.String())
 		m.syncInputOverlays()
 	}
 	return m, cmd
@@ -856,12 +990,7 @@ func (m model) handleMentionPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
-		m.recordRecentMention(selected.Path)
-		nextValue := mention.InsertIntoInput(m.input.Value(), m.mentionToken, selected.Path)
-		m.setInputValue(nextValue)
-		m.statusNote = "Inserted mention: " + selected.Path
-		m.closeMentionPalette()
-		m.syncInputOverlays()
+		m.applyMentionSelection(selected)
 		return m, nil
 	case "enter":
 		selected, ok := m.selectedMentionCandidate()
@@ -869,12 +998,7 @@ func (m model) handleMentionPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeMentionPalette()
 			return m.handleKey(msg)
 		}
-		m.recordRecentMention(selected.Path)
-		nextValue := mention.InsertIntoInput(m.input.Value(), m.mentionToken, selected.Path)
-		m.setInputValue(nextValue)
-		m.statusNote = "Inserted mention: " + selected.Path
-		m.closeMentionPalette()
-		m.syncInputOverlays()
+		m.applyMentionSelection(selected)
 		return m, nil
 	}
 
@@ -882,10 +1006,95 @@ func (m model) handleMentionPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	if m.input.Value() != before {
-		m.noteInputMutation(before, m.input.Value(), msg.String())
+		m.handleInputMutation(before, m.input.Value(), msg.String())
 		m.syncInputOverlays()
 	}
 	return m, cmd
+}
+
+func (m *model) applyMentionSelection(selected mention.Candidate) {
+	m.recordRecentMention(selected.Path)
+
+	if assetID, note, isImage := m.ingestMentionImageCandidate(selected.Path); isImage {
+		if strings.TrimSpace(string(assetID)) != "" {
+			m.bindMentionImageAsset(selected.Path, assetID)
+			nextValue := mention.InsertIntoInput(m.input.Value(), m.mentionToken, selected.Path)
+			m.setInputValue(nextValue)
+			if strings.TrimSpace(note) != "" {
+				m.statusNote = note
+			} else {
+				m.statusNote = "Attached image: @" + filepath.ToSlash(strings.TrimSpace(selected.Path))
+			}
+			m.closeMentionPalette()
+			m.syncInputOverlays()
+			return
+		}
+		if strings.TrimSpace(note) != "" {
+			m.statusNote = note
+		}
+	}
+
+	nextValue := mention.InsertIntoInput(m.input.Value(), m.mentionToken, selected.Path)
+	m.setInputValue(nextValue)
+	m.statusNote = "Inserted mention: " + selected.Path
+	m.closeMentionPalette()
+	m.syncInputOverlays()
+}
+
+func (m *model) ingestMentionImageCandidate(path string) (assetID llm.AssetID, note string, isImage bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", "", false
+	}
+
+	resolved := path
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(m.workspace, resolved)
+	}
+	resolved = filepath.Clean(resolved)
+
+	info, err := os.Stat(resolved)
+	if err != nil || info.IsDir() {
+		return "", "", false
+	}
+	if _, ok := mediaTypeFromPath(resolved); !ok {
+		return "", "", false
+	}
+
+	placeholder, note, ok := m.ingestImageFromPath(resolved)
+	if !ok {
+		return "", note, true
+	}
+	imageID, ok := imageIDFromPlaceholder(placeholder)
+	if !ok {
+		return "", "image ingest failed: invalid placeholder id", true
+	}
+	assetID, _, ok = m.findAssetByImageID(imageID)
+	if !ok {
+		return "", "image ingest failed: asset metadata missing", true
+	}
+	return assetID, note, true
+}
+
+func (m *model) bindMentionImageAsset(path string, assetID llm.AssetID) {
+	if m == nil {
+		return
+	}
+	key := normalizeImageMentionPath(path)
+	if key == "" || strings.TrimSpace(string(assetID)) == "" {
+		return
+	}
+	if m.inputImageMentions == nil {
+		m.inputImageMentions = make(map[string]llm.AssetID, 8)
+	}
+	if m.orphanedImages == nil {
+		m.orphanedImages = make(map[llm.AssetID]time.Time, 8)
+	}
+	if prev, ok := m.inputImageMentions[key]; ok && prev != assetID {
+		m.orphanedImages[prev] = time.Now().UTC()
+	}
+	m.inputImageMentions[key] = assetID
+	delete(m.orphanedImages, assetID)
 }
 
 func (m *model) openCommandPalette() {
@@ -959,6 +1168,26 @@ func (m *model) noteInputMutation(before, after, source string) {
 	}
 }
 
+func (m *model) handleInputMutation(before, after, source string) {
+	m.noteInputMutation(before, after, source)
+	updated, note := m.applyInputImagePipeline(before, after, source)
+	if updated == after {
+		fallbackUpdated, fallbackNote := m.applyWholeInputImagePathFallback(after, source)
+		if fallbackUpdated != after {
+			updated = fallbackUpdated
+		}
+		if strings.TrimSpace(note) == "" {
+			note = fallbackNote
+		}
+	}
+	if updated != after {
+		m.setInputValue(updated)
+	}
+	if strings.TrimSpace(note) != "" {
+		m.statusNote = note
+	}
+}
+
 func lenCommonPrefix(a, b string) int {
 	limit := min(len(a), len(b))
 	for i := 0; i < limit; i++ {
@@ -969,18 +1198,24 @@ func lenCommonPrefix(a, b string) int {
 	return limit
 }
 
-func (m model) submitPrompt(value string) (tea.Model, tea.Cmd) {
-	m.input.Reset()
-	m.screen = screenChat
-	m.appendChat(chatEntry{
-		Kind:   "user",
-		Title:  "You",
-		Meta:   formatUserMeta(m.currentModelLabel(), time.Now()),
-		Body:   value,
-		Status: "final",
-	})
+func (m *model) beginRun(prompt, mode, note string) tea.Cmd {
+	return m.beginRunWithInput(agent.RunPromptInput{
+		UserMessage: llm.NewUserTextMessage(prompt),
+		DisplayText: prompt,
+	}, mode, note)
+}
+
+func (m *model) beginRunWithInput(promptInput agent.RunPromptInput, mode, note string) tea.Cmd {
+	runCtx, cancel := context.WithCancel(context.Background())
+	m.runSeq++
+	runID := m.runSeq
+	m.activeRunID = runID
+	m.runCancel = cancel
 	m.streamingIndex = -1
-	m.statusNote = "Request sent to LLM. Waiting for response..."
+	if strings.TrimSpace(note) == "" {
+		note = "Request sent to LLM. Waiting for response..."
+	}
+	m.statusNote = note
 	m.phase = "thinking"
 	m.llmConnected = true
 	m.busy = true
@@ -989,7 +1224,85 @@ func (m model) submitPrompt(value string) (tea.Model, tea.Cmd) {
 		m.syncLayoutForCurrentScreen()
 		m.refreshViewport()
 	}
-	return m, tea.Batch(m.startRunCmd(value, string(m.mode)), m.spinner.Tick, waitForAsync(m.async))
+	return tea.Batch(m.startRunCmd(runCtx, runID, promptInput, mode), m.spinner.Tick, waitForAsync(m.async))
+}
+
+func (m model) submitPrompt(value string) (tea.Model, tea.Cmd) {
+	promptInput, displayText, err := m.buildPromptInput(value)
+	if err != nil {
+		m.statusNote = err.Error()
+		return m, nil
+	}
+
+	m.input.Reset()
+	m.screen = screenChat
+	m.appendChat(chatEntry{
+		Kind:   "user",
+		Title:  "You",
+		Meta:   formatUserMeta(m.currentModelLabel(), time.Now()),
+		Body:   displayText,
+		Status: "final",
+	})
+	return m, m.beginRunWithInput(promptInput, string(m.mode), "Request sent to LLM. Waiting for response...")
+}
+
+func (m model) submitBTW(value string) (tea.Model, tea.Cmd) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return m, nil
+	}
+
+	m.input.Reset()
+	m.screen = screenChat
+	m.appendChat(chatEntry{
+		Kind:   "user",
+		Title:  "You",
+		Meta:   formatUserMeta(m.currentModelLabel(), time.Now()) + " | btw",
+		Body:   value,
+		Status: "final",
+	})
+	var dropped int
+	m.pendingBTW, dropped = queueBTWUpdate(m.pendingBTW, value)
+	m.chatAutoFollow = true
+
+	if m.interrupting {
+		if dropped > 0 {
+			m.statusNote = fmt.Sprintf("Queued BTW update (%d pending, dropped %d older). Waiting for current run to stop...", len(m.pendingBTW), dropped)
+		} else {
+			m.statusNote = fmt.Sprintf("Queued BTW update (%d pending). Waiting for current run to stop...", len(m.pendingBTW))
+		}
+		m.phase = "interrupting"
+		if m.width > 0 && m.height > 0 {
+			m.syncLayoutForCurrentScreen()
+			m.refreshViewport()
+		}
+		return m, nil
+	}
+
+	wasToolPhase := m.phase == "tool"
+	m.interrupting = true
+	m.phase = "interrupting"
+	if m.runCancel != nil {
+		if wasToolPhase {
+			m.interruptSafe = true
+			m.statusNote = "BTW queued. Waiting for current tool step to finish..."
+		} else {
+			m.interruptSafe = false
+			m.statusNote = "BTW received. Stopping current run..."
+			m.runCancel()
+		}
+	} else {
+		prompt := composeBTWPrompt(m.pendingBTW)
+		m.pendingBTW = nil
+		m.interrupting = false
+		m.interruptSafe = false
+		return m, m.beginRun(prompt, string(m.mode), "BTW accepted. Restarting with your update...")
+	}
+	if m.width > 0 && m.height > 0 {
+		m.syncLayoutForCurrentScreen()
+		m.refreshViewport()
+	}
+	return m, nil
 }
 
 func (m *model) handleAgentEvent(event agent.Event) {
@@ -1037,6 +1350,12 @@ func (m *model) handleAgentEvent(event agent.Event) {
 		}
 		m.statusNote = summary
 		m.phase = "thinking"
+		if m.interruptSafe && m.interrupting && len(m.pendingBTW) > 0 && m.runCancel != nil {
+			m.interruptSafe = false
+			m.phase = "interrupting"
+			m.statusNote = "BTW received. Stopping current run..."
+			m.runCancel()
+		}
 	case agent.EventPlanUpdated:
 		m.plan = copyPlanState(event.Plan)
 		m.phase = string(planpkg.NormalizePhase(string(m.plan.Phase)))
@@ -2008,6 +2327,16 @@ func (m *model) newSession() error {
 	m.restoreTokenUsageFromSession(next)
 	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, m.tokenBudget)
 	m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
+	m.inputImageRefs = make(map[int]llm.AssetID, 8)
+	m.inputImageMentions = make(map[string]llm.AssetID, 8)
+	m.orphanedImages = make(map[llm.AssetID]time.Time, 8)
+	m.nextImageID = nextSessionImageID(next)
+	m.ensureSessionImageAssets()
+	m.pendingBTW = nil
+	m.interrupting = false
+	m.interruptSafe = false
+	m.runCancel = nil
+	m.activeRunID = 0
 	m.input.Reset()
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
@@ -2039,6 +2368,17 @@ func (m *model) resumeSession(prefix string) error {
 	m.restoreTokenUsageFromSession(next)
 	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, m.tokenBudget)
 	m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
+	m.inputImageRefs = make(map[int]llm.AssetID, 8)
+	m.inputImageMentions = make(map[string]llm.AssetID, 8)
+	m.orphanedImages = make(map[llm.AssetID]time.Time, 8)
+	m.nextImageID = nextSessionImageID(next)
+	m.ensureSessionImageAssets()
+	m.syncInputImageRefs("")
+	m.pendingBTW = nil
+	m.interrupting = false
+	m.interruptSafe = false
+	m.runCancel = nil
+	m.activeRunID = 0
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
 		m.refreshViewport()
@@ -2046,11 +2386,11 @@ func (m *model) resumeSession(prefix string) error {
 	return nil
 }
 
-func (m model) startRunCmd(prompt, mode string) tea.Cmd {
+func (m model) startRunCmd(runCtx context.Context, runID int, prompt agent.RunPromptInput, mode string) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
-			_, err := m.runner.RunPrompt(context.Background(), m.sess, prompt, mode, io.Discard)
-			m.async <- runFinishedMsg{Err: err}
+			_, err := m.runner.RunPromptWithInput(runCtx, m.sess, prompt, mode, io.Discard)
+			m.async <- runFinishedMsg{RunID: runID, Err: err}
 		}()
 		return nil
 	}
@@ -2494,13 +2834,13 @@ func normalizeAssistantMarkdownLine(line string) string {
 	prefix := ""
 	switch {
 	case strings.HasPrefix(trimmed, "- [ ] "):
-		prefix = "• [ ] "
+		prefix = "鈥?[ ] "
 		trimmed = strings.TrimSpace(trimmed[len("- [ ] "):])
 	case strings.HasPrefix(strings.ToLower(trimmed), "- [x] "):
-		prefix = "• [x] "
+		prefix = "鈥?[x] "
 		trimmed = strings.TrimSpace(trimmed[len("- [x] "):])
 	case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "* "), strings.HasPrefix(trimmed, "+ "):
-		prefix = "• "
+		prefix = "鈥?"
 		trimmed = strings.TrimSpace(trimmed[2:])
 	default:
 		if marker, rest, ok := splitOrderedListItem(trimmed); ok {
@@ -2976,17 +3316,17 @@ func isMeaningfulThinking(body, toolName string) bool {
 	}
 
 	cnPrefixes := []string{
-		"我将调用",
-		"我会调用",
-		"我先调用",
-		"我要调用",
+		"鎴戝皢璋冪敤",
+		"鎴戜細璋冪敤",
+		"鎴戝厛璋冪敤",
+		"鎴戣璋冪敤",
 		"先调用",
-		"我将使用",
-		"我会使用",
-		"我先使用",
-		"我将运行",
-		"我会运行",
-		"先检查相关上下文",
+		"鎴戝皢浣跨敤",
+		"鎴戜細浣跨敤",
+		"鎴戝厛浣跨敤",
+		"鎴戝皢杩愯",
+		"鎴戜細杩愯",
+		"鍏堟鏌ョ浉鍏充笂涓嬫枃",
 	}
 	for _, prefix := range cnPrefixes {
 		if strings.HasPrefix(raw, prefix) {
@@ -3016,7 +3356,7 @@ func shouldRenderThinkingFromDelta(body string) bool {
 		"through build and test",
 		"我会先",
 		"先了解",
-		"然后",
+		"鐒跺悗",
 		"最后",
 		"通过构建和测试",
 		"系统性",
@@ -3055,6 +3395,7 @@ func (m *model) syncCommandPalette() {
 func (m *model) syncInputOverlays() {
 	m.syncCommandPalette()
 	m.syncMentionPalette()
+	m.syncInputImageRefs(m.input.Value())
 }
 
 func (m *model) syncMentionPalette() {
@@ -3269,6 +3610,7 @@ func (m model) helpText() string {
 		"/<skill-name> [k=v...]: activate a skill for this session.",
 		"/skill clear: clear the active skill.",
 		"/new: start a fresh session.",
+		"/btw <message>: interject while a run is in progress.",
 		"/quit: exit the TUI.",
 		"",
 		"UI notes",
@@ -3460,6 +3802,86 @@ func currentOrNextStepTitle(state planpkg.State) string {
 		}
 	}
 	return ""
+}
+
+func isBTWCommand(input string) bool {
+	fields := strings.Fields(strings.TrimSpace(input))
+	if len(fields) == 0 {
+		return false
+	}
+	return fields[0] == "/btw"
+}
+
+func extractBTWText(input string) (string, error) {
+	fields := strings.Fields(strings.TrimSpace(input))
+	if len(fields) == 0 || fields[0] != "/btw" {
+		return "", errors.New("usage: /btw <message>")
+	}
+	text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]))
+	if text == "" {
+		return "", errors.New("usage: /btw <message>")
+	}
+	return text, nil
+}
+
+func composeBTWPrompt(entries []string) string {
+	cleaned := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		trimmed := strings.TrimSpace(entry)
+		if trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		}
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+	if len(cleaned) == 1 {
+		return strings.Join([]string{
+			"User sent a BTW update while you were executing an existing task.",
+			"Continue the same task from the latest progress, and apply this update with high priority unless it explicitly changes the goal:",
+			cleaned[0],
+		}, "\n")
+	}
+	lines := make([]string, 0, len(cleaned)+2)
+	lines = append(lines, "User sent multiple BTW updates during execution. Later items have higher priority:")
+	for i, entry := range cleaned {
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, entry))
+	}
+	lines = append(lines, "Please continue the same task with these updates and keep unfinished steps unless explicitly changed.")
+	return strings.Join(lines, "\n")
+}
+
+func formatBTWUpdateScope(count int) string {
+	if count <= 1 {
+		return "your latest update"
+	}
+	return fmt.Sprintf("%d updates", count)
+}
+
+func queueBTWUpdate(queue []string, value string) ([]string, int) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return queue, 0
+	}
+	queue = append(queue, trimmed)
+	if len(queue) <= maxPendingBTW {
+		return queue, 0
+	}
+	dropped := len(queue) - maxPendingBTW
+	return append([]string(nil), queue[dropped:]...), dropped
+}
+
+func classifyRunFinish(err error, restartedByBTW bool) runFinishReason {
+	if restartedByBTW {
+		return runFinishReasonBTWRestart
+	}
+	if err == nil {
+		return runFinishReasonCompleted
+	}
+	if errors.Is(err, context.Canceled) {
+		return runFinishReasonCanceled
+	}
+	return runFinishReasonFailed
 }
 
 func isContinueExecutionInput(input string) bool {

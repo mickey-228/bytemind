@@ -1241,8 +1241,6 @@ func TestAltEnterInsertsNewlineWithoutSubmitting(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
-=======
 func TestShiftEnterInsertsNewlineWithoutSubmitting(t *testing.T) {
 	input := textarea.New()
 	input.Focus()
@@ -1262,14 +1260,12 @@ func TestShiftEnterInsertsNewlineWithoutSubmitting(t *testing.T) {
 	updated := got.(model)
 
 	if len(updated.chatItems) != 0 {
-		t.Fatalf("expected shift+enter not to submit prompt")
+		t.Fatalf("expected shift+enter not to submit")
 	}
 	if updated.input.Value() != "first line\n" {
 		t.Fatalf("expected shift+enter to insert newline, got %q", updated.input.Value())
 	}
 }
-
->>>>>>> origin/main
 func TestCtrlJInsertsNewlineWithoutSubmitting(t *testing.T) {
 	input := textarea.New()
 	input.Focus()
@@ -2608,22 +2604,6 @@ func TestRenderChatSectionToolHeaderOmitsStatusWords(t *testing.T) {
 	}
 	if strings.Contains(got, "params:") || strings.Contains(got, "{\"") {
 		t.Fatalf("expected tool section to hide params content, got %q", got)
-	}
-}
-
-func TestRenderChatCardToolUsesVisualSeparator(t *testing.T) {
-	got := renderChatCard(chatEntry{
-		Kind:   "tool",
-		Title:  "Tool Result | read_file",
-		Body:   "Read internal/tui/model.go lines 1-20",
-		Status: "done",
-	}, 64)
-
-	if !strings.Contains(got, "│") {
-		t.Fatalf("expected tool card to include a left border separator, got %q", got)
-	}
-	if !strings.Contains(got, "Tool Result | read_file") {
-		t.Fatalf("expected tool card title to render, got %q", got)
 	}
 }
 

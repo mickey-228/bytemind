@@ -806,6 +806,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if isInputNewlineKey(msg) {
 		before := m.input.Value()
 		var cmd tea.Cmd
+		// Preserve multiline input shortcuts without triggering submit.
 		m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		if m.input.Value() != before {
 			source := msg.String()
@@ -849,7 +850,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-<<<<<<< HEAD
 	if isInputNewlineKey(msg) {
 		before := m.input.Value()
 		var cmd tea.Cmd
@@ -864,9 +864,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
-
-=======
->>>>>>> origin/main
 	if msg.String() == "enter" {
 		rawValue := m.input.Value()
 		value := strings.TrimSpace(rawValue)
@@ -3272,15 +3269,9 @@ func renderChatSection(item chatEntry, width int) string {
 		title = cardTitleStyle.Foreground(colorUser)
 	case "tool":
 		if strings.HasPrefix(displayTitle, "Tool Result | ") {
-<<<<<<< HEAD
-			title = cardTitleStyle.Foreground(lipgloss.Color("#7AC7FF")).Bold(true)
-		} else {
-			title = cardTitleStyle.Foreground(lipgloss.Color("#E5B567")).Bold(true)
-=======
 			title = toolResultTitle
 		} else {
 			title = toolCallTitle
->>>>>>> origin/main
 		}
 		bodyStyle = toolBodyStyle
 		status = ""

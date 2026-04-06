@@ -2789,7 +2789,7 @@ func TestFormatChatBodySeparatesParagraphAndList(t *testing.T) {
 	if !strings.Contains(got, "Explanation") {
 		t.Fatalf("expected explanation text to remain, got %q", got)
 	}
-	if !strings.Contains(got, "鈥?first") {
+	if !strings.Contains(got, "- first") {
 		t.Fatalf("expected markdown list marker to be normalized, got %q", got)
 	}
 }

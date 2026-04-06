@@ -2834,13 +2834,13 @@ func normalizeAssistantMarkdownLine(line string) string {
 	prefix := ""
 	switch {
 	case strings.HasPrefix(trimmed, "- [ ] "):
-		prefix = "鈥?[ ] "
+		prefix = "- [ ] "
 		trimmed = strings.TrimSpace(trimmed[len("- [ ] "):])
 	case strings.HasPrefix(strings.ToLower(trimmed), "- [x] "):
-		prefix = "鈥?[x] "
+		prefix = "- [x] "
 		trimmed = strings.TrimSpace(trimmed[len("- [x] "):])
 	case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "* "), strings.HasPrefix(trimmed, "+ "):
-		prefix = "鈥?"
+		prefix = "- "
 		trimmed = strings.TrimSpace(trimmed[2:])
 	default:
 		if marker, rest, ok := splitOrderedListItem(trimmed); ok {

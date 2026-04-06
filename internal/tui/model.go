@@ -608,6 +608,20 @@ func isInputNewlineKey(msg tea.KeyMsg) bool {
 	return key == "shift+enter" || key == "shift+return"
 }
 
+func isCtrlVPasteKey(msg tea.KeyMsg) bool {
+	if msg.Type == tea.KeyCtrlV {
+		return true
+	}
+	if len(msg.Runes) == 1 && msg.Runes[0] == []rune(ctrlVMarkerRune)[0] {
+		return true
+	}
+	return normalizeKeyName(msg.String()) == "ctrl+v"
+}
+
+func isClipboardNoImageNote(note string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(note)), "clipboard has no image")
+}
+
 func isPageUpKey(msg tea.KeyMsg) bool {
 	key := normalizeKeyName(msg.String())
 	return msg.Type == tea.KeyPgUp || key == "pgup" || key == "pageup" || key == "prior"
@@ -818,6 +832,23 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	ctrlVPasteDetected := isCtrlVPasteKey(msg)
+	// Prefer Ctrl+V image paste first. If clipboard has no image, fall through
+	// so regular terminal paste behavior can continue.
+	if ctrlVPasteDetected {
+		if note := m.handleEmptyClipboardPaste(); strings.TrimSpace(note) != "" {
+			m.statusNote = note
+			if strings.Contains(note, "Attached image from clipboard") {
+				m.syncInputOverlays()
+				return m, nil
+			}
+			if !isClipboardNoImageNote(note) {
+				m.syncInputOverlays()
+				return m, nil
+			}
+		}
+	}
+
 	switch msg.String() {
 	case "ctrl+l":
 		if !m.busy {
@@ -825,12 +856,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadSessionsCmd()
 	case "alt+v":
-		if !m.busy {
-			if note := m.handleEmptyClipboardPaste(); strings.TrimSpace(note) != "" {
-				m.statusNote = note
-			}
-			m.syncInputOverlays()
+		if note := m.handleEmptyClipboardPaste(); strings.TrimSpace(note) != "" {
+			m.statusNote = note
 		}
+		m.syncInputOverlays()
 		return m, nil
 	case "ctrl+n":
 		if !m.busy && m.screen == screenChat {
@@ -923,6 +952,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		after = m.input.Value()
 	}
 	triggerClipboardImagePaste := shouldTriggerClipboardImagePaste(before, after, msg.String())
+	if ctrlVPasteDetected {
+		triggerClipboardImagePaste = false
+	}
 	if !triggerClipboardImagePaste && msg.Paste {
 		_, inserted, _ := insertionDiff(before, after)
 		cleanInserted := strings.TrimSpace(strings.ReplaceAll(inserted, ctrlVMarkerRune, ""))

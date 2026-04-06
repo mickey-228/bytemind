@@ -1312,6 +1312,55 @@ func TestAltVPastesClipboardImage(t *testing.T) {
 	}
 }
 
+func TestCtrlVPastesClipboardImage(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.clipboard = fakeClipboardImageReader{
+		mediaType: "image/png",
+		data:      []byte("clipboard"),
+		fileName:  "clipboard.png",
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlV})
+	updated := got.(model)
+	if updated.input.Value() != "[Image #1]" {
+		t.Fatalf("expected ctrl+v to paste clipboard image placeholder, got %q", updated.input.Value())
+	}
+}
+
+func TestCtrlVControlMarkerRunePastesClipboardImage(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.clipboard = fakeClipboardImageReader{
+		mediaType: "image/png",
+		data:      []byte("clipboard"),
+		fileName:  "clipboard.png",
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\x16'}})
+	updated := got.(model)
+	if updated.input.Value() != "[Image #1]" {
+		t.Fatalf("expected ctrl+v control marker to paste clipboard image placeholder, got %q", updated.input.Value())
+	}
+}
+
+func TestCtrlVWithoutImageShowsStatusNote(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.clipboard = fakeClipboardImageReader{
+		err: errors.New("clipboard has no image"),
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlV})
+	updated := got.(model)
+	if updated.input.Value() != "" {
+		t.Fatalf("expected input to stay empty, got %q", updated.input.Value())
+	}
+	if !strings.Contains(strings.ToLower(updated.statusNote), "clipboard has no image") {
+		t.Fatalf("expected no-image status note, got %q", updated.statusNote)
+	}
+}
+
 func TestTerminalPasteEventWithEmptyPayloadPastesClipboardImage(t *testing.T) {
 	m := newImagePipelineModel(t)
 	m.screen = screenChat

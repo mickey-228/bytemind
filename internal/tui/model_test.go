@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"bytemind/internal/agent"
 	"bytemind/internal/config"
@@ -546,6 +545,32 @@ func TestAltEnterInsertsNewlineWithoutSubmitting(t *testing.T) {
 	}
 }
 
+func TestCtrlJInsertsNewlineWithoutSubmitting(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	input.SetWidth(40)
+	input.SetHeight(3)
+	input.SetValue("first line")
+	input.CursorEnd()
+
+	m := model{
+		screen:    screenChat,
+		input:     input,
+		workspace: "E:\\bytemind",
+		sess:      session.New("E:\\bytemind"),
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	updated := got.(model)
+
+	if len(updated.chatItems) != 0 {
+		t.Fatalf("expected ctrl+j not to submit prompt")
+	}
+	if updated.input.Value() != "first line\n" {
+		t.Fatalf("expected ctrl+j to insert newline, got %q", updated.input.Value())
+	}
+}
+
 func TestAltVPastesClipboardImage(t *testing.T) {
 	m := newImagePipelineModel(t)
 	m.screen = screenChat
@@ -617,7 +642,7 @@ func TestRapidRuneInputForImagePathTriggersFallbackPlaceholder(t *testing.T) {
 	}
 }
 
-func TestImmediateEnterAfterPasteDoesNotSubmit(t *testing.T) {
+func TestImmediateEnterAfterPasteStillSubmits(t *testing.T) {
 	input := textarea.New()
 	input.Focus()
 	input.SetWidth(40)
@@ -626,25 +651,24 @@ func TestImmediateEnterAfterPasteDoesNotSubmit(t *testing.T) {
 	input.CursorEnd()
 
 	m := model{
-		screen:      screenChat,
-		input:       input,
-		workspace:   "E:\\bytemind",
-		sess:        session.New("E:\\bytemind"),
-		lastPasteAt: time.Now(),
+		screen:    screenChat,
+		input:     input,
+		workspace: "E:\\bytemind",
+		sess:      session.New("E:\\bytemind"),
 	}
 
 	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	updated := got.(model)
 
-	if len(updated.chatItems) != 0 {
-		t.Fatalf("expected immediate enter after paste not to submit")
+	if len(updated.chatItems) < 1 {
+		t.Fatalf("expected enter to submit immediately, got %d chat items", len(updated.chatItems))
 	}
-	if updated.input.Value() != "first line\n" {
-		t.Fatalf("expected pasted enter to stay inside input, got %q", updated.input.Value())
+	if updated.chatItems[0].Body != "first line" {
+		t.Fatalf("expected submitted body to match input text, got %q", updated.chatItems[0].Body)
 	}
 }
 
-func TestEnterSubmitsAfterPasteGuardExpires(t *testing.T) {
+func TestEnterSubmitsMultilinePrompt(t *testing.T) {
 	input := textarea.New()
 	input.Focus()
 	input.SetWidth(40)
@@ -653,18 +677,20 @@ func TestEnterSubmitsAfterPasteGuardExpires(t *testing.T) {
 	input.CursorEnd()
 
 	m := model{
-		screen:      screenChat,
-		input:       input,
-		workspace:   "E:\\bytemind",
-		sess:        session.New("E:\\bytemind"),
-		lastPasteAt: time.Now().Add(-time.Second),
+		screen:    screenChat,
+		input:     input,
+		workspace: "E:\\bytemind",
+		sess:      session.New("E:\\bytemind"),
 	}
 
 	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	updated := got.(model)
 
 	if len(updated.chatItems) < 1 {
-		t.Fatalf("expected enter to submit after paste guard expires, got %d chat items", len(updated.chatItems))
+		t.Fatalf("expected enter to submit multiline prompt, got %d chat items", len(updated.chatItems))
+	}
+	if updated.chatItems[0].Body != "first line\nsecond line" {
+		t.Fatalf("expected multiline body to be preserved, got %q", updated.chatItems[0].Body)
 	}
 }
 
@@ -2147,6 +2173,22 @@ func TestBusyEnterInToolPhaseDefersBTWCancel(t *testing.T) {
 	}
 	if updated.statusNote != "BTW queued. Waiting for current tool step to finish..." {
 		t.Fatalf("expected deferred tool note, got %q", updated.statusNote)
+	}
+}
+
+func TestRenderChatCardToolUsesVisualSeparator(t *testing.T) {
+	got := renderChatCard(chatEntry{
+		Kind:   "tool",
+		Title:  "Tool Result | read_file",
+		Body:   "Read internal/tui/model.go lines 1-20",
+		Status: "done",
+	}, 64)
+
+	if !strings.Contains(got, "│") && !strings.Contains(got, "|") {
+		t.Fatalf("expected tool card to include a left border separator, got %q", got)
+	}
+	if !strings.Contains(got, "Tool Result | read_file") {
+		t.Fatalf("expected tool card title to render, got %q", got)
 	}
 }
 

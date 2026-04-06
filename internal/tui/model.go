@@ -185,12 +185,12 @@ type model struct {
 	lastInputAt        time.Time
 	inputBurstSize     int
 	chatAutoFollow     bool
-	runCancel      context.CancelFunc
-	pendingBTW     []string
-	interrupting   bool
-	interruptSafe  bool
-	runSeq         int
-	activeRunID    int
+	runCancel          context.CancelFunc
+	pendingBTW         []string
+	interrupting       bool
+	interruptSafe      bool
+	runSeq             int
+	activeRunID        int
 }
 
 func newModel(opts Options) model {
@@ -459,6 +459,17 @@ func normalizeKeyName(key string) string {
 	return replacer.Replace(key)
 }
 
+func isInputNewlineKey(msg tea.KeyMsg) bool {
+	if msg.Type == tea.KeyCtrlJ || normalizeKeyName(msg.String()) == "ctrl+j" {
+		return true
+	}
+	if msg.Type == tea.KeyEnter && msg.Alt {
+		return true
+	}
+	key := normalizeKeyName(msg.String())
+	return key == "shift+enter" || key == "shift+return"
+}
+
 func isPageUpKey(msg tea.KeyMsg) bool {
 	key := normalizeKeyName(msg.String())
 	return msg.Type == tea.KeyPgUp || key == "pgup" || key == "pageup" || key == "prior"
@@ -656,28 +667,22 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if msg.Type == tea.KeyEnter && msg.Alt {
+	if isInputNewlineKey(msg) {
 		before := m.input.Value()
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		if m.input.Value() != before {
-			m.handleInputMutation(before, m.input.Value(), "alt+enter")
+			source := msg.String()
+			if strings.TrimSpace(source) == "" {
+				source = "shift+enter"
+			}
+			m.handleInputMutation(before, m.input.Value(), source)
 			m.syncInputOverlays()
 		}
 		return m, cmd
 	}
 
 	if msg.String() == "enter" {
-		if !m.lastPasteAt.IsZero() && time.Since(m.lastPasteAt) < pasteSubmitGuard {
-			before := m.input.Value()
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			if m.input.Value() != before {
-				m.handleInputMutation(before, m.input.Value(), "paste-enter")
-				m.syncInputOverlays()
-			}
-			return m, cmd
-		}
 		value := strings.TrimSpace(m.input.Value())
 		if value == "" {
 			return m, nil
@@ -2192,7 +2197,7 @@ func renderChatCard(item chatEntry, width int) string {
 	case "user":
 		border = chatUserStyle
 	case "tool":
-		border = chatToolStyle
+		border = chatAssistantStyle
 	case "system":
 		border = chatSystemStyle
 	default:
@@ -2201,7 +2206,21 @@ func renderChatCard(item chatEntry, width int) string {
 		}
 	}
 	contentWidth := max(8, width-border.GetHorizontalFrameSize())
-	return border.Width(contentWidth).Render(renderChatSection(item, contentWidth))
+	rendered := border.Width(contentWidth).Render(renderChatSection(item, contentWidth))
+	if item.Kind != "tool" {
+		return rendered
+	}
+
+	sep := lipgloss.NewStyle().Foreground(colorTool).Render("│")
+	lines := strings.Split(rendered, "\n")
+	for i := range lines {
+		if strings.TrimSpace(lines[i]) == "" {
+			lines[i] = "  " + lines[i]
+			continue
+		}
+		lines[i] = sep + " " + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderChatSection(item chatEntry, width int) string {
@@ -2216,8 +2235,13 @@ func renderChatSection(item chatEntry, width int) string {
 	case "user":
 		title = cardTitleStyle.Foreground(colorUser)
 	case "tool":
-		title = cardTitleStyle.Foreground(colorMuted).Faint(true)
+		if strings.HasPrefix(displayTitle, "Tool Result | ") {
+			title = cardTitleStyle.Foreground(lipgloss.Color("#7AC7FF")).Bold(true)
+		} else {
+			title = cardTitleStyle.Foreground(lipgloss.Color("#E5B567")).Bold(true)
+		}
 		bodyStyle = toolBodyStyle
+		status = ""
 	case "system":
 		title = cardTitleStyle.Foreground(colorMuted)
 	default:

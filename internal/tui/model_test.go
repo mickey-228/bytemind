@@ -2413,6 +2413,52 @@ func TestRebuildSessionTimelineParsesUserToolResultParts(t *testing.T) {
 	}
 }
 
+func TestRebuildSessionTimelineFallsBackToGenericToolNameForUnknownToolUseID(t *testing.T) {
+	sess := &session.Session{
+		Messages: []llm.Message{
+			llm.NewToolResultMessage("missing-call-id", `{"ok":true}`),
+		},
+	}
+
+	items, runs := rebuildSessionTimeline(sess)
+	if len(items) != 1 {
+		t.Fatalf("expected only one tool item, got %#v", items)
+	}
+	if items[0].Kind != "tool" || items[0].Title != "Tool Call | tool" {
+		t.Fatalf("expected fallback tool title for unknown tool use id, got %#v", items[0])
+	}
+	if len(runs) != 1 || runs[0].Name != "tool" {
+		t.Fatalf("expected fallback tool run name, got %#v", runs)
+	}
+}
+
+func TestRebuildSessionTimelineParsesLegacyToolRoleMessage(t *testing.T) {
+	sess := &session.Session{
+		Messages: []llm.Message{
+			llm.NewAssistantTextMessage("analysis complete"),
+			{
+				Role:       llm.Role("tool"),
+				ToolCallID: "missing-call-id",
+				Content:    `{"path":"a.txt","content":"ok"}`,
+			},
+		},
+	}
+
+	items, runs := rebuildSessionTimeline(sess)
+	if len(items) != 2 {
+		t.Fatalf("expected assistant + tool items, got %#v", items)
+	}
+	if items[0].Kind != "assistant" || !strings.Contains(items[0].Body, "analysis complete") {
+		t.Fatalf("expected assistant text item from legacy message, got %#v", items[0])
+	}
+	if items[1].Kind != "tool" || items[1].Title != "Tool Call | tool" {
+		t.Fatalf("expected fallback tool title for legacy tool message, got %#v", items[1])
+	}
+	if len(runs) != 1 || runs[0].Name != "tool" {
+		t.Fatalf("expected tool run reconstructed from legacy tool message, got %#v", runs)
+	}
+}
+
 func TestHandleAgentEventShowsToolProgressInChat(t *testing.T) {
 	m := model{
 		chatItems: []chatEntry{

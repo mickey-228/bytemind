@@ -1580,12 +1580,7 @@ func (m *model) handleAgentEvent(event agent.Event) {
 		m.statusNote = "Running tool: " + event.ToolName
 	case agent.EventToolCallCompleted:
 		summary, lines, status := summarizeTool(event.ToolName, event.ToolResult)
-		m.appendChat(chatEntry{
-			Kind:   "tool",
-			Title:  "Tool Result | " + event.ToolName,
-			Body:   joinSummary(summary, lines),
-			Status: status,
-		})
+		m.finishLatestToolCall(event.ToolName, joinSummary(summary, lines), status)
 		if len(m.toolRuns) > 0 {
 			index := len(m.toolRuns) - 1
 			m.toolRuns[index].Summary = summary
@@ -3201,7 +3196,7 @@ func rebuildSessionTimeline(sess *session.Session) ([]chatEntry, []toolRun) {
 				summary, lines, status := summarizeTool(name, part.ToolResult.Content)
 				items = append(items, chatEntry{
 					Kind:   "tool",
-					Title:  "Tool Result | " + name,
+					Title:  "Tool Call | " + name,
 					Body:   joinSummary(summary, lines),
 					Status: status,
 				})
@@ -3226,7 +3221,7 @@ func rebuildSessionTimeline(sess *session.Session) ([]chatEntry, []toolRun) {
 			summary, lines, status := summarizeTool(name, message.Content)
 			items = append(items, chatEntry{
 				Kind:   "tool",
-				Title:  "Tool Result | " + name,
+				Title:  "Tool Call | " + name,
 				Body:   joinSummary(summary, lines),
 				Status: status,
 			})

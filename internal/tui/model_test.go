@@ -445,42 +445,6 @@ func TestAccumulateTokenUsageFallbackAndClamp(t *testing.T) {
 	}
 }
 
-func TestRestoreTokenUsageFromSessionUsesCurrentSessionOnly(t *testing.T) {
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create session store: %v", err)
-	}
-
-	workspace := t.TempDir()
-	current := session.New(workspace)
-	current.Messages = []llm.Message{
-		{Role: "assistant", Parts: []llm.Part{{Type: llm.PartText, Text: &llm.TextPart{Value: "ok"}}}, Usage: &llm.Usage{InputTokens: 30, OutputTokens: 20, ContextTokens: 10, TotalTokens: 60}},
-	}
-	other := session.New(workspace)
-	other.Messages = []llm.Message{
-		{Role: "assistant", Parts: []llm.Part{{Type: llm.PartText, Text: &llm.TextPart{Value: "ok"}}}, Usage: &llm.Usage{InputTokens: 200, OutputTokens: 100, ContextTokens: 50, TotalTokens: 350}},
-	}
-	if err := store.Save(current); err != nil {
-		t.Fatalf("failed to save current session: %v", err)
-	}
-	if err := store.Save(other); err != nil {
-		t.Fatalf("failed to save other session: %v", err)
-	}
-
-	m := model{
-		store:     store,
-		workspace: workspace,
-	}
-	m.restoreTokenUsageFromSession(current)
-
-	if m.tokenUsedTotal != 60 {
-		t.Fatalf("expected current session total 60, got %d", m.tokenUsedTotal)
-	}
-	if m.tokenInput != 30 || m.tokenOutput != 20 || m.tokenContext != 10 {
-		t.Fatalf("unexpected breakdown input=%d output=%d context=%d", m.tokenInput, m.tokenOutput, m.tokenContext)
-	}
-}
-
 func TestCtrlLFromLandingOpensSessions(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {

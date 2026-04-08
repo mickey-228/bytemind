@@ -307,7 +307,6 @@ func newModel(opts Options) model {
 		tokenUsage:           newTokenUsageComponent(),
 		tokenBudget:          max(1, opts.Config.TokenQuota),
 		tokenEstimator:       newRealtimeTokenEstimator(opts.Config.Provider.Model),
-		tokenRealtimeEnabled: opts.Config.TokenUsage.EnableRealtime && opts.Runner.HasTokenManager(),
 		inputImageRefs:       make(map[int]llm.AssetID, 8),
 		inputImageMentions:   make(map[string]llm.AssetID, 8),
 		orphanedImages:       make(map[llm.AssetID]time.Time, 8),

@@ -3123,6 +3123,79 @@ func TestBusyEnterQueuesBTWAndCancelsRun(t *testing.T) {
 	}
 }
 
+func TestBusyEnterSuppressedAfterRecentMultilinePaste(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	input.SetValue("请完成一个企业级插件化平台框架\n•动态加载插件\n•插件权限隔离")
+	input.CursorEnd()
+
+	canceled := false
+	m := model{
+		screen:      screenChat,
+		busy:        true,
+		input:       input,
+		lastPasteAt: time.Now(),
+		sess:        session.New("E:\\bytemind"),
+		workspace:   "E:\\bytemind",
+		runCancel:   func() { canceled = true },
+	}
+
+	got, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+
+	if cmd != nil {
+		t.Fatalf("expected suppressed enter not to schedule a command")
+	}
+	if canceled {
+		t.Fatalf("expected suppressed enter not to cancel current run")
+	}
+	if updated.interrupting {
+		t.Fatalf("expected suppressed enter not to switch to interrupting state")
+	}
+	if len(updated.pendingBTW) != 0 {
+		t.Fatalf("expected suppressed enter not to queue btw, got %#v", updated.pendingBTW)
+	}
+	if len(updated.chatItems) != 0 {
+		t.Fatalf("expected suppressed enter not to append chat items, got %#v", updated.chatItems)
+	}
+	if updated.input.Value() != m.input.Value() {
+		t.Fatalf("expected pasted content to stay in input, got %q", updated.input.Value())
+	}
+}
+
+func TestBusyEnterSuppressedForRecentPasteBurstSingleLine(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	input.SetValue("•动态加载插件")
+	input.CursorEnd()
+
+	canceled := false
+	now := time.Now()
+	m := model{
+		screen:      screenChat,
+		busy:        true,
+		input:       input,
+		lastPasteAt: now,
+		lastInputAt: now,
+		sess:        session.New("E:\\bytemind"),
+		workspace:   "E:\\bytemind",
+		runCancel:   func() { canceled = true },
+	}
+
+	got, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+
+	if cmd != nil {
+		t.Fatalf("expected suppressed burst enter not to schedule a command")
+	}
+	if canceled {
+		t.Fatalf("expected suppressed burst enter not to cancel current run")
+	}
+	if updated.interrupting || len(updated.pendingBTW) != 0 || len(updated.chatItems) != 0 {
+		t.Fatalf("expected no BTW side effects, got interrupting=%v pending=%#v chat=%#v", updated.interrupting, updated.pendingBTW, updated.chatItems)
+	}
+}
+
 func TestBusyEnterInToolPhaseDefersBTWCancel(t *testing.T) {
 	input := textarea.New()
 	input.Focus()

@@ -893,6 +893,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.String() == "enter" {
+		if m.shouldSuppressEnterAfterPaste() {
+			return m, nil
+		}
 		rawValue := m.input.Value()
 		value := strings.TrimSpace(rawValue)
 		if m.startupGuide.Active && !strings.HasPrefix(value, "/") {
@@ -983,6 +986,21 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.syncInputOverlays()
 	return m, cmd
+}
+
+func (m model) shouldSuppressEnterAfterPaste() bool {
+	if m.lastPasteAt.IsZero() {
+		return false
+	}
+	if time.Since(m.lastPasteAt) > pasteSubmitGuard {
+		return false
+	}
+	// Some terminals deliver paste as line-by-line bursts with synthetic Enter
+	// events. Guard both multiline payloads and immediate post-input Enter bursts.
+	if strings.Contains(m.input.Value(), "\n") {
+		return true
+	}
+	return time.Since(m.lastInputAt) <= 120*time.Millisecond
 }
 
 func (m model) handleCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

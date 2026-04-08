@@ -48,6 +48,7 @@ const (
 	chatTitleLabel        = "Bytemind Chat"
 	tuiTitleLabel         = "Bytemind TUI"
 	footerHintText        = "tab agents | / commands | Ctrl+F history | Ctrl+L sessions | Ctrl+C quit"
+	tokenUsageFeatureOn   = true
 )
 
 type screenKind string
@@ -159,6 +160,15 @@ type tokenUsagePulledMsg struct {
 	Err     error
 }
 
+type refreshRemoteTokenUsageMsg struct{}
+
+type tokenManagerStatsMsg struct {
+	Snapshot agent.TokenRealtimeSnapshot
+	Err      error
+}
+
+type refreshTokenManagerStatsMsg struct{}
+
 var commandItems = []commandItem{
 	{Name: "/help", Usage: "/help", Description: "Show usage and supported commands.", Kind: "command"},
 	{Name: "/session", Usage: "/session", Description: "Open the recent session list.", Kind: "command"},
@@ -226,7 +236,15 @@ type model struct {
 	tokenOutput           int
 	tokenContext          int
 	tempEstimatedOutput   int
+	tokenHasOfficialUsage bool
 	tokenEstimator        *realtimeTokenEstimator
+	tokenRealtimeEnabled  bool
+	tokenRealtimeTPS      float64
+	tokenRealtimeActive   int
+	tokenRealtimeError    float64
+	tokenRealtimeLatency  time.Duration
+	tokenRealtimeGlobal   int64
+	tokenRealtimeUpdated  time.Time
 	promptHistoryLoaded   bool
 	promptHistoryEntries  []history.PromptEntry
 	promptSearchMode      promptSearchMode
@@ -287,39 +305,40 @@ func newModel(opts Options) model {
 	})
 
 	m := model{
-		runner:             opts.Runner,
-		store:              opts.Store,
-		sess:               opts.Session,
-		imageStore:         opts.ImageStore,
-		cfg:                opts.Config,
-		workspace:          opts.Workspace,
-		async:              async,
-		viewport:           vp,
-		planView:           planVP,
-		input:              input,
-		spinner:            spin,
-		chatItems:          chatItems,
-		toolRuns:           toolRuns,
-		plan:               copyPlanState(opts.Session.Plan),
-		sessions:           nil,
-		sessionLimit:       defaultSessionLimit,
-		screen:             initialScreen(opts.Session),
-		mode:               toAgentMode(opts.Session.Mode),
-		streamingIndex:     -1,
-		statusNote:         "Ready.",
-		phase:              "idle",
-		llmConnected:       true,
-		chatAutoFollow:     true,
-		mentionIndex:       mention.NewWorkspaceFileIndex(opts.Workspace),
-		tokenUsage:         newTokenUsageComponent(),
-		tokenBudget:        max(1, opts.Config.TokenQuota),
-		tokenEstimator:     newRealtimeTokenEstimator(opts.Config.Provider.Model),
-		inputImageRefs:     make(map[int]llm.AssetID, 8),
-		inputImageMentions: make(map[string]llm.AssetID, 8),
-		orphanedImages:     make(map[llm.AssetID]time.Time, 8),
-		nextImageID:        nextSessionImageID(opts.Session),
-		clipboard:          defaultClipboardImageReader{},
-		startupGuide:       opts.StartupGuide,
+		runner:               opts.Runner,
+		store:                opts.Store,
+		sess:                 opts.Session,
+		imageStore:           opts.ImageStore,
+		cfg:                  opts.Config,
+		workspace:            opts.Workspace,
+		async:                async,
+		viewport:             vp,
+		planView:             planVP,
+		input:                input,
+		spinner:              spin,
+		chatItems:            chatItems,
+		toolRuns:             toolRuns,
+		plan:                 copyPlanState(opts.Session.Plan),
+		sessions:             nil,
+		sessionLimit:         defaultSessionLimit,
+		screen:               initialScreen(opts.Session),
+		mode:                 toAgentMode(opts.Session.Mode),
+		streamingIndex:       -1,
+		statusNote:           "Ready.",
+		phase:                "idle",
+		llmConnected:         true,
+		chatAutoFollow:       true,
+		mentionIndex:         mention.NewWorkspaceFileIndex(opts.Workspace),
+		tokenUsage:           newTokenUsageComponent(),
+		tokenBudget:          max(1, opts.Config.TokenQuota),
+		tokenEstimator:       newRealtimeTokenEstimator(opts.Config.Provider.Model),
+		tokenRealtimeEnabled: opts.Config.TokenUsage.EnableRealtime && opts.Runner.HasTokenManager(),
+		inputImageRefs:       make(map[int]llm.AssetID, 8),
+		inputImageMentions:   make(map[string]llm.AssetID, 8),
+		orphanedImages:       make(map[llm.AssetID]time.Time, 8),
+		nextImageID:          nextSessionImageID(opts.Session),
+		clipboard:            defaultClipboardImageReader{},
+		startupGuide:         opts.StartupGuide,
 	}
 	if opts.StartupGuide.Active {
 		m.statusNote = opts.StartupGuide.Status
@@ -328,7 +347,8 @@ func newModel(opts Options) model {
 		m.initializeStartupGuide()
 	}
 	m.restoreTokenUsageFromSession(opts.Session)
-	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, m.tokenBudget)
+	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, 0)
+	m.tokenUsage.SetUnavailable(!m.tokenHasOfficialUsage)
 	m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
 	m.ensureSessionImageAssets()
 	m.syncInputStyle()
@@ -340,13 +360,16 @@ func newModel(opts Options) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		textarea.Blink,
 		waitForAsync(m.async),
 		m.tokenUsage.tickCmd(),
 		m.loadSessionsCmd(),
-		m.fetchRemoteTokenUsageCmd(),
-	)
+	}
+	if m.tokenRealtimeEnabled {
+		cmds = append(cmds, m.fetchTokenManagerStatsCmd())
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -440,20 +463,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tokenUsagePulledMsg:
-		if msg.Err != nil {
+		if m.tokenRealtimeEnabled {
 			return m, nil
 		}
-		// Prefer remotely pulled account usage, but never reduce live local counters.
-		m.tokenUsedTotal = max(m.tokenUsedTotal, msg.Used)
-		m.tokenInput = max(m.tokenInput, msg.Input)
-		m.tokenOutput = max(m.tokenOutput, msg.Output)
-		m.tokenContext = max(m.tokenContext, msg.Context)
-		_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, m.tokenBudget)
-		m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
+		// Remote account usage does not represent the current session; ignore it for session-only tracking.
 		return m, nil
 	case tokenMonitorTickMsg:
 		cmd, _ := m.tokenUsage.Update(msg)
 		return m, cmd
+	case refreshRemoteTokenUsageMsg:
+		return m, m.fetchRemoteTokenUsageCmd()
+	case tokenManagerStatsMsg:
+		if msg.Err != nil {
+			return m, m.scheduleTokenManagerStatsRefresh()
+		}
+		m.tokenRealtimeTPS = msg.Snapshot.CurrentTPS
+		m.tokenRealtimeActive = msg.Snapshot.ActiveSessions
+		m.tokenRealtimeError = msg.Snapshot.ErrorRate
+		m.tokenRealtimeLatency = msg.Snapshot.AvgLatency
+		m.tokenRealtimeGlobal = msg.Snapshot.GlobalTotalTokens
+		m.tokenRealtimeUpdated = msg.Snapshot.GeneratedAt
+
+		m.tokenUsedTotal = max(0, int(msg.Snapshot.SessionTotalTokens))
+		m.tokenInput = max(0, int(msg.Snapshot.SessionInputTokens))
+		m.tokenOutput = max(0, int(msg.Snapshot.SessionOutputTokens))
+		m.tokenHasOfficialUsage = true
+		// Context tokens may not be reported by some providers in realtime snapshots.
+		if m.tokenInput+m.tokenOutput >= m.tokenUsedTotal {
+			m.tokenContext = 0
+		} else {
+			m.tokenContext = m.tokenUsedTotal - m.tokenInput - m.tokenOutput
+		}
+		_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, 0)
+		m.tokenUsage.SetUnavailable(!m.tokenHasOfficialUsage)
+		m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
+		return m, m.scheduleTokenManagerStatsRefresh()
+	case refreshTokenManagerStatsMsg:
+		return m, m.fetchTokenManagerStatsCmd()
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
 	case tea.KeyMsg:
@@ -1403,6 +1449,7 @@ func (m *model) beginRun(prompt, mode, note string) tea.Cmd {
 
 func (m *model) beginRunWithInput(promptInput agent.RunPromptInput, mode, note string) tea.Cmd {
 	runCtx, cancel := context.WithCancel(context.Background())
+	m.tempEstimatedOutput = 0
 	m.runSeq++
 	runID := m.runSeq
 	m.activeRunID = runID
@@ -1525,7 +1572,6 @@ func (m *model) handleAgentEvent(event agent.Event) {
 		m.phase = "responding"
 		m.statusNote = "LLM is responding..."
 		m.llmConnected = true
-		m.applyEstimatedUsage(event.Content)
 		m.appendAssistantDelta(event.Content)
 	case agent.EventAssistantMessage:
 		m.llmConnected = true
@@ -1581,6 +1627,7 @@ func (m *model) handleAgentEvent(event agent.Event) {
 }
 
 func (m *model) applyUsage(usage llm.Usage) {
+	m.tokenHasOfficialUsage = true
 	input := max(0, usage.InputTokens)
 	output := max(0, usage.OutputTokens)
 	context := max(0, usage.ContextTokens)
@@ -1604,22 +1651,8 @@ func (m *model) applyUsage(usage llm.Usage) {
 	m.tokenInput += input
 	m.tokenOutput += output
 	m.tokenContext += context
-	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, m.tokenBudget)
-	m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
-}
-
-func (m *model) applyEstimatedUsage(delta string) {
-	if strings.TrimSpace(delta) == "" {
-		return
-	}
-	estimated := estimateDeltaTokens(m.tokenEstimator, delta)
-	if estimated <= 0 {
-		return
-	}
-	m.tempEstimatedOutput += estimated
-	m.tokenUsedTotal += estimated
-	m.tokenOutput += estimated
-	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, m.tokenBudget)
+	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, 0)
+	m.tokenUsage.SetUnavailable(!m.tokenHasOfficialUsage)
 	m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
 }
 
@@ -1900,7 +1933,9 @@ func (m model) View() string {
 }
 
 func (m *model) SetUsage(used, total int) tea.Cmd {
-	return m.tokenUsage.SetUsage(used, total)
+	m.tokenHasOfficialUsage = true
+	m.tokenUsage.SetUnavailable(false)
+	return m.tokenUsage.SetUsage(used, 0)
 }
 
 func (m model) renderConversation() string {
@@ -1975,9 +2010,6 @@ func (m model) renderMainPanel() string {
 }
 
 func (m model) renderTokenBadge(width int) string {
-	if width < 80 {
-		return m.tokenUsage.CompactView()
-	}
 	return m.tokenUsage.View()
 }
 
@@ -2236,15 +2268,29 @@ func (m model) renderStatusBarWithWidth(width int) string {
 		"Step: " + stepTitle,
 		"Skill: " + m.currentSkillLabel(),
 	}, "  |  ")
-	right := strings.Join([]string{
+	rightParts := []string{
 		fmt.Sprintf("%d msgs", len(m.chatItems)),
 		"Session: " + m.currentSessionLabel(),
 		"Follow: " + m.autoFollowLabel(),
 		"Model: " + m.currentModelLabel(),
-	}, "  |  ")
+	}
+	if tokenRT := m.tokenRealtimeSummary(); tokenRT != "" {
+		rightParts = append(rightParts, tokenRT)
+	}
+	right := strings.Join(rightParts, "  |  ")
 
 	line := m.renderTopInfoLine(left, right, width)
 	return statusBarStyle.Width(width).Render(line)
+}
+
+func (m model) tokenRealtimeSummary() string {
+	if !m.tokenRealtimeEnabled {
+		return ""
+	}
+	if m.tokenRealtimeUpdated.IsZero() {
+		return "RT: pending"
+	}
+	return fmt.Sprintf("RT: %.0f tps / %d act / %.1f%% err", m.tokenRealtimeTPS, m.tokenRealtimeActive, m.tokenRealtimeError*100)
 }
 
 func (m model) renderTopInfoLine(left, right string, width int) string {
@@ -2991,7 +3037,8 @@ func (m *model) newSession() error {
 	m.statusNote = "Started a new session."
 	m.chatAutoFollow = true
 	m.restoreTokenUsageFromSession(next)
-	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, m.tokenBudget)
+	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, 0)
+	m.tokenUsage.SetUnavailable(!m.tokenHasOfficialUsage)
 	m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
 	m.inputImageRefs = make(map[int]llm.AssetID, 8)
 	m.inputImageMentions = make(map[string]llm.AssetID, 8)
@@ -3032,7 +3079,8 @@ func (m *model) resumeSession(prefix string) error {
 	m.statusNote = "Resumed session " + shortID(next.ID)
 	m.chatAutoFollow = true
 	m.restoreTokenUsageFromSession(next)
-	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, m.tokenBudget)
+	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, 0)
+	m.tokenUsage.SetUnavailable(!m.tokenHasOfficialUsage)
 	m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
 	m.inputImageRefs = make(map[int]llm.AssetID, 8)
 	m.inputImageMentions = make(map[string]llm.AssetID, 8)
@@ -3087,33 +3135,62 @@ func (m model) fetchRemoteTokenUsageCmd() tea.Cmd {
 	}
 }
 
+func (m model) fetchTokenManagerStatsCmd() tea.Cmd {
+	if !m.tokenRealtimeEnabled || m.runner == nil || m.sess == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		snapshot, err := m.runner.GetTokenRealtimeSnapshot(m.sess.ID)
+		if err != nil {
+			return tokenManagerStatsMsg{Err: err}
+		}
+		return tokenManagerStatsMsg{Snapshot: snapshot}
+	}
+}
+
+func (m model) scheduleRemoteTokenUsageRefresh() tea.Cmd {
+	if !tokenUsageFeatureOn {
+		return nil
+	}
+	if d := remoteTokenUsageRefreshInterval(m.cfg); d > 0 {
+		return tea.Tick(d, func(time.Time) tea.Msg {
+			return refreshRemoteTokenUsageMsg{}
+		})
+	}
+	return nil
+}
+
+func (m model) scheduleTokenManagerStatsRefresh() tea.Cmd {
+	if !m.tokenRealtimeEnabled {
+		return nil
+	}
+	return tea.Tick(1*time.Second, func(time.Time) tea.Msg {
+		return refreshTokenManagerStatsMsg{}
+	})
+}
+
+func remoteTokenUsageRefreshInterval(cfg config.Config) time.Duration {
+	if !tokenUsageFeatureOn {
+		return 0
+	}
+	if !strings.Contains(strings.ToLower(strings.TrimSpace(cfg.Provider.BaseURL)), "api.openai.com") {
+		return 0
+	}
+	if strings.TrimSpace(cfg.Provider.ResolveAPIKey()) == "" {
+		return 0
+	}
+	return 30 * time.Second
+}
+
 func (m *model) restoreTokenUsageFromSession(sess *session.Session) {
 	m.tempEstimatedOutput = 0
+	m.tokenHasOfficialUsage = false
 	m.tokenUsedTotal = 0
 	m.tokenInput = 0
 	m.tokenOutput = 0
 	m.tokenContext = 0
 
-	countedAny := false
-	if m.store != nil {
-		summaries, _, err := m.store.List(0)
-		if err == nil {
-			for _, summary := range summaries {
-				if !sameWorkspace(m.workspace, summary.Workspace) {
-					continue
-				}
-				stored, loadErr := m.store.Load(summary.ID)
-				if loadErr != nil || stored == nil {
-					continue
-				}
-				m.accumulateTokenUsage(stored.Messages)
-				countedAny = true
-			}
-		}
-	}
-
-	// Fallback for tests or when store data is unavailable.
-	if !countedAny && sess != nil {
+	if sess != nil {
 		m.accumulateTokenUsage(sess.Messages)
 	}
 }
@@ -3123,6 +3200,7 @@ func (m *model) accumulateTokenUsage(messages []llm.Message) {
 		if msg.Usage == nil {
 			continue
 		}
+		m.tokenHasOfficialUsage = true
 		used := msg.Usage.TotalTokens
 		if used <= 0 {
 			used = msg.Usage.InputTokens + msg.Usage.OutputTokens + msg.Usage.ContextTokens

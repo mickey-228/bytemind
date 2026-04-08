@@ -16,6 +16,7 @@ import (
 	"bytemind/internal/config"
 	"bytemind/internal/provider"
 	"bytemind/internal/session"
+	"bytemind/internal/tokenusage"
 	"bytemind/internal/tools"
 )
 
@@ -103,6 +104,9 @@ func runOneShot(args []string, stdin io.Reader, stdout, stderr io.Writer) error 
 	if err != nil {
 		return err
 	}
+	defer func() { _ = app.Close() }()
+	stopPanel := startCLITokenPanel(app, sess.ID, stderr)
+	defer stopPanel()
 
 	_, err = app.RunPrompt(context.Background(), sess, *prompt, "build", stdout)
 	return err
@@ -180,15 +184,43 @@ func bootstrapWithOptions(configPath, modelOverride, sessionID, streamOverride, 
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	tokenCfg := tokenusage.DefaultConfig()
+	tokenCfg.StorageType = cfg.TokenUsage.StorageType
+	tokenCfg.StoragePath = cfg.TokenUsage.StoragePath
+	if strings.TrimSpace(tokenCfg.StoragePath) != "" && !filepath.IsAbs(tokenCfg.StoragePath) {
+		tokenCfg.StoragePath = filepath.Join(workspace, tokenCfg.StoragePath)
+	}
+	if strings.TrimSpace(tokenCfg.StoragePath) == "" {
+		tokenCfg.StoragePath = filepath.Join(home, "logs", "token_usage.json")
+	}
+	if d, parseErr := time.ParseDuration(strings.TrimSpace(cfg.TokenUsage.BackupInterval)); parseErr == nil && d > 0 {
+		tokenCfg.BackupInterval = d
+	}
+	if d, parseErr := time.ParseDuration(strings.TrimSpace(cfg.TokenUsage.MonitorInterval)); parseErr == nil && d > 0 {
+		tokenCfg.MonitorInterval = d
+	}
+	tokenCfg.MaxSessions = cfg.TokenUsage.MaxSessions
+	tokenCfg.AlertThreshold = cfg.TokenUsage.AlertThreshold
+	tokenCfg.EnableRealtime = cfg.TokenUsage.EnableRealtime
+	tokenCfg.RetentionDays = cfg.TokenUsage.RetentionDays
+	tokenCfg.DatabaseDriver = cfg.TokenUsage.DatabaseDriver
+	tokenManager, err := tokenusage.NewTokenUsageManager(&tokenCfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if tokenCfg.EnableRealtime {
+		_ = tokenManager.StartMonitoring(context.Background())
+	}
 
 	runner := agent.NewRunner(agent.Options{
-		Workspace: workspace,
-		Config:    cfg,
-		Client:    client,
-		Store:     store,
-		Registry:  tools.DefaultRegistry(),
-		Stdin:     stdin,
-		Stdout:    stdout,
+		Workspace:    workspace,
+		Config:       cfg,
+		Client:       client,
+		Store:        store,
+		Registry:     tools.DefaultRegistry(),
+		TokenManager: tokenManager,
+		Stdin:        stdin,
+		Stdout:       stdout,
 	})
 
 	return runner, store, sess, nil
@@ -418,4 +450,70 @@ func resolveWorkspace(workspaceOverride string) (string, error) {
 		return os.Getwd()
 	}
 	return filepath.Abs(workspaceOverride)
+}
+
+func startCLITokenPanel(runner *agent.Runner, sessionID string, out io.Writer) func() {
+	if runner == nil || !runner.TokenRealtimeEnabled() || !isInteractiveWriter(out) {
+		return func() {}
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		maxWidth := 0
+		render := func() {
+			snapshot, err := runner.GetTokenRealtimeSnapshot(sessionID)
+			if err != nil {
+				return
+			}
+			line := fmt.Sprintf(
+				"[token] session=%d in=%d out=%d",
+				snapshot.SessionTotalTokens,
+				snapshot.SessionInputTokens,
+				snapshot.SessionOutputTokens,
+			)
+			width := len([]rune(line))
+			if width < maxWidth {
+				line += strings.Repeat(" ", maxWidth-width)
+			}
+			if width > maxWidth {
+				maxWidth = width
+			}
+			_, _ = fmt.Fprintf(out, "\r%s", line)
+		}
+
+		render()
+		for {
+			select {
+			case <-stop:
+				if maxWidth > 0 {
+					_, _ = fmt.Fprintf(out, "\r%s\r", strings.Repeat(" ", maxWidth))
+				}
+				return
+			case <-ticker.C:
+				render()
+			}
+		}
+	}()
+
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
+func isInteractiveWriter(w io.Writer) bool {
+	file, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
 }

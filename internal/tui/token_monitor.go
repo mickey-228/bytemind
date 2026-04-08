@@ -23,6 +23,7 @@ type tokenUsageComponent struct {
 	used        int
 	total       int
 	displayUsed float64
+	unavailable bool
 	input       int
 	output      int
 	context     int
@@ -58,23 +59,24 @@ func newTokenUsageComponent() tokenUsageComponent {
 }
 
 func (c *tokenUsageComponent) SetUsage(used, total int) tea.Cmd {
-	if total < 1 {
-		total = 1
+	if total < 0 {
+		total = 0
 	}
 	used = max(0, used)
 	c.used = used
 	c.total = total
-	if math.Abs(c.displayUsed-float64(c.used)) < 0.5 {
-		c.displayUsed = float64(c.used)
-		return nil
-	}
-	return c.tickCmd()
+	c.displayUsed = float64(c.used)
+	return nil
 }
 
 func (c *tokenUsageComponent) SetBreakdown(input, output, context int) {
 	c.input = max(0, input)
 	c.output = max(0, output)
 	c.context = max(0, context)
+}
+
+func (c *tokenUsageComponent) SetUnavailable(unavailable bool) {
+	c.unavailable = unavailable
 }
 
 // SetPrice sets token prices per 1M tokens.
@@ -88,34 +90,21 @@ func (c *tokenUsageComponent) SetBounds(x, y, width, height int) {
 }
 
 func (c tokenUsageComponent) View() string {
-	if c.total <= 0 {
-		return ""
-	}
 	text := c.usageText()
 	return c.badgeStyle().Render(text)
 }
 
 func (c tokenUsageComponent) CompactView() string {
-	if c.total <= 0 {
-		return ""
-	}
 	return c.badgeStyle().Render(c.compactUsageText())
 }
 
 func (c tokenUsageComponent) PopupView() string {
-	if !c.popup {
-		return ""
-	}
-	return c.popupStyle().Render(c.popupText())
+	return ""
 }
 
 func (c *tokenUsageComponent) Update(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
-		if c.total <= 0 {
-			c.hover = false
-			return nil, false
-		}
 		inside := c.contains(msg.X, msg.Y)
 		switch msg.Action {
 		case tea.MouseActionMotion:
@@ -124,9 +113,8 @@ func (c *tokenUsageComponent) Update(msg tea.Msg) (tea.Cmd, bool) {
 		case tea.MouseActionPress:
 			if msg.Button == tea.MouseButtonLeft && inside {
 				c.hover = true
-				c.popup = true
-				c.popupUntil = time.Now().Add(tokenPopupLifetime)
-				return c.tickCmd(), true
+				// No popup for token usage.
+				return nil, true
 			}
 			if msg.Button == tea.MouseButtonLeft && !inside && c.popup {
 				c.popup = false
@@ -140,23 +128,21 @@ func (c *tokenUsageComponent) Update(msg tea.Msg) (tea.Cmd, bool) {
 		}
 	case tokenMonitorTickMsg:
 		needsMore := false
-		if c.total > 0 {
-			diff := float64(c.used) - c.displayUsed
-			if math.Abs(diff) > 0.5 {
-				step := math.Max(2, math.Abs(diff)*0.35)
-				if math.Abs(diff) > 120 {
-					step = math.Max(step, 10)
-				}
-				if diff < 0 {
-					c.displayUsed -= step
-				} else {
-					c.displayUsed += step
-				}
-				c.displayUsed = clampFloat(c.displayUsed, 0, float64(max(c.total, c.used)))
-				needsMore = true
-			} else {
-				c.displayUsed = float64(c.used)
+		diff := float64(c.used) - c.displayUsed
+		if math.Abs(diff) > 0.5 {
+			step := math.Max(2, math.Abs(diff)*0.35)
+			if math.Abs(diff) > 120 {
+				step = math.Max(step, 10)
 			}
+			if diff < 0 {
+				c.displayUsed -= step
+			} else {
+				c.displayUsed += step
+			}
+			c.displayUsed = clampFloat(c.displayUsed, 0, float64(max(c.total, c.used)))
+			needsMore = true
+		} else {
+			c.displayUsed = float64(c.used)
 		}
 		if c.popup && time.Now().After(c.popupUntil) {
 			c.popup = false
@@ -190,29 +176,28 @@ func (c tokenUsageComponent) contains(x, y int) bool {
 }
 
 func (c tokenUsageComponent) usageText() string {
-	pad := max(5, len(formatInt(c.total)))
-	if c.hover {
-		percent := 0.0
-		if c.total > 0 {
-			percent = clampFloat(c.displayUsed/float64(c.total), 0, 1) * 100
-		}
-		return lipgloss.NewStyle().Width(pad*2 + 3).Align(lipgloss.Right).Render(fmt.Sprintf("%5.1f%%", percent))
+	if c.unavailable {
+		return "token: unavailable"
 	}
 	used := max(0, int(math.Round(c.displayUsed)))
-	text := fmt.Sprintf("%*s / %*s", pad, formatInt(used), pad, formatInt(c.total))
-	return lipgloss.NewStyle().Width(pad*2 + 3).Render(text)
+	text := "token: " + formatInt(used)
+	pad := max(8, len(text))
+	if c.hover {
+		text = "Used " + text
+		pad = max(pad, len(text))
+	}
+	return lipgloss.NewStyle().Width(pad).Render(text)
 }
 
 func (c tokenUsageComponent) compactUsageText() string {
-	if c.hover {
-		percent := 0.0
-		if c.total > 0 {
-			percent = clampFloat(c.displayUsed/float64(c.total), 0, 1) * 100
-		}
-		return fmt.Sprintf("%5.1f%%", percent)
+	if c.unavailable {
+		return "token: unavailable"
 	}
 	used := max(0, int(math.Round(c.displayUsed)))
-	return formatInt(used)
+	if c.hover {
+		return fmt.Sprintf("used token: %s", formatInt(used))
+	}
+	return fmt.Sprintf("token: %s", formatInt(used))
 }
 
 func (c tokenUsageComponent) ratio() float64 {
@@ -337,15 +322,7 @@ func ringGlyph(level int, full, half string) string {
 }
 
 func (c tokenUsageComponent) popupText() string {
-	cost := c.estimatedCost()
-	lines := []string{
-		"Token Breakdown",
-		"Input:   " + formatInt(c.input),
-		"Output:  " + formatInt(c.output),
-		"Context: " + formatInt(c.context),
-		fmt.Sprintf("Estimated Cost: $%.6f", cost),
-	}
-	return strings.Join(lines, "\n")
+	return ""
 }
 
 func (c tokenUsageComponent) estimatedCost() float64 {

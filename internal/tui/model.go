@@ -193,7 +193,17 @@ var commandItems = []commandItem{
 	{Name: "/btw", Usage: "/btw <message>", Description: "Interject while a run is in progress.", Kind: "command"},
 	{Name: "/quit", Usage: "/quit", Description: "Exit the current TUI window.", Kind: "command"},
 	{Name: "/skills", Usage: "/skills", Description: "List available skills and current active skill.", Kind: "command"},
+	{Name: "/skill author", Usage: "/skill author [name]", Description: "Enter skill author mode and create/update a scaffold.", Kind: "command"},
 	{Name: "/skill clear", Usage: "/skill clear", Description: "Clear active skill for this session.", Kind: "command"},
+	{Name: "/skill delete", Usage: "/skill delete <name>", Description: "Delete a project skill by name.", Kind: "command"},
+}
+
+var builtinSkillDescriptionsCN = map[string]string{
+	"bug-investigation": "Investigate reproducible issues and propose concrete fixes.",
+	"github-pr":         "Analyze PR diffs, review comments, and merge risk with evidence.",
+	"repo-onboarding":   "Build a fast understanding of repository structure and execution flow.",
+	"review":            "Review code for correctness, regression risk, and missing tests.",
+	"write-rfc":         "Draft a structured technical proposal with tradeoffs and rollout plan.",
 }
 
 type model struct {
@@ -276,6 +286,8 @@ type model struct {
 	pendingBTW            []string
 	interrupting          bool
 	interruptSafe         bool
+	skillAuthorMode       bool
+	skillAuthorName       string
 	runSeq                int
 	activeRunID           int
 	startupGuide          StartupGuide
@@ -1026,6 +1038,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return next, cmd
+		}
+		if m.skillAuthorMode {
+			return m.submitSkillAuthorInput(value)
 		}
 		return m.submitPrompt(value)
 	}
@@ -3106,7 +3121,8 @@ func (m *model) runSkillsListCommand(input string) error {
 	} else {
 		lines = append(lines, "Available skills:")
 		for _, skill := range skillsList {
-			lines = append(lines, fmt.Sprintf("- %s (%s): %s", skill.Name, skill.Scope, skill.Description))
+			description := localizedSkillDescriptionForTUI(skill.Name, string(skill.Scope), skill.Description)
+			lines = append(lines, fmt.Sprintf("- %s (%s): %s", skill.Name, skill.Scope, description))
 		}
 	}
 	if len(diagnostics) > 0 {
@@ -3117,7 +3133,7 @@ func (m *model) runSkillsListCommand(input string) error {
 	}
 
 	m.appendCommandExchange(input, strings.Join(lines, "\n"))
-	m.statusNote = fmt.Sprintf("Discovered %d skill(s).", len(skillsList))
+	m.statusNote = fmt.Sprintf("Discovered %d skills.", len(skillsList))
 	return nil
 }
 
@@ -3125,15 +3141,118 @@ func (m *model) runSkillCommand(input string, fields []string) error {
 	if m.runner == nil {
 		return fmt.Errorf("runner is unavailable")
 	}
-	if len(fields) != 2 || fields[1] != "clear" {
+	if len(fields) < 2 {
+		return fmt.Errorf("usage: /skill <author|clear|delete> ...")
+	}
+	switch strings.ToLower(strings.TrimSpace(fields[1])) {
+	case "author":
+		return m.runSkillAuthorCommand(input, fields)
+	case "clear":
+		return m.runSkillStateClearCommand(input, fields)
+	case "delete":
+		return m.runSkillDeleteCommand(input, fields)
+	default:
+		return fmt.Errorf("usage: /skill <author|clear|delete> ...")
+	}
+}
+
+func (m *model) runSkillAuthorCommand(input string, fields []string) error {
+	if len(fields) == 2 {
+		m.skillAuthorMode = true
+		m.skillAuthorName = ""
+		m.syncInputStyle()
+		m.appendCommandExchange(input, strings.Join([]string{
+			"Skill author mode enabled.",
+			"Step 1/2 (name): send only the skill name, for example `review-plus`.",
+			"Step 2/2 (content): after the name is set, send requirements to refine that skill.",
+			"Use `/skill author done` to exit this mode.",
+		}, "\n"))
+		m.statusNote = "Skill author mode: step 1/2 (name)"
+		return nil
+	}
+
+	control := strings.ToLower(strings.TrimSpace(fields[2]))
+	if len(fields) == 3 && (control == "done" || control == "exit" || control == "cancel") {
+		m.skillAuthorMode = false
+		m.skillAuthorName = ""
+		m.syncInputStyle()
+		m.appendCommandExchange(input, "Skill author mode closed.")
+		m.statusNote = "Skill author mode closed"
+		return nil
+	}
+
+	name, brief, err := parseSkillAuthorArgs(fields)
+	if err != nil {
+		return err
+	}
+	response, err := m.authorSkill(name, brief)
+	if err != nil {
+		return err
+	}
+	m.skillAuthorMode = true
+	m.skillAuthorName = name
+	m.syncInputStyle()
+
+	m.appendCommandExchange(input, response+"\nCurrent skill locked: `"+name+"`.\nNow in step 2/2 (content), keep sending requirements.")
+	m.statusNote = "Skill author mode: step 2/2 (content)"
+	return nil
+}
+
+func (m *model) runSkillStateClearCommand(input string, fields []string) error {
+	if len(fields) != 2 {
 		return fmt.Errorf("usage: /skill clear")
 	}
 
+	activeName := ""
+	if m.sess != nil && m.sess.ActiveSkill != nil {
+		activeName = strings.TrimSpace(m.sess.ActiveSkill.Name)
+	}
 	if err := m.runner.ClearActiveSkill(m.sess); err != nil {
 		return err
 	}
-	m.appendCommandExchange(input, "Active skill cleared.")
-	m.statusNote = "Skill cleared."
+
+	message := "No active skill in this session; state remains empty."
+	if activeName != "" {
+		message = fmt.Sprintf("Cleared active skill `%s` from this session.", activeName)
+	}
+	m.appendCommandExchange(input, message)
+	m.statusNote = "Skill state cleared"
+	return nil
+}
+
+func (m *model) runSkillDeleteCommand(input string, fields []string) error {
+	if len(fields) < 3 {
+		return fmt.Errorf("usage: /skill delete <name>")
+	}
+	name := strings.TrimSpace(strings.TrimPrefix(fields[2], "/"))
+	if name == "" {
+		return fmt.Errorf("usage: /skill delete <name>")
+	}
+
+	result, err := m.runner.ClearSkill(name)
+	if err != nil {
+		return err
+	}
+
+	lines := []string{
+		fmt.Sprintf("Deleted project skill `%s`.", result.Name),
+		fmt.Sprintf("Dir: %s", result.Dir),
+	}
+
+	if m.sess != nil && m.sess.ActiveSkill != nil && strings.EqualFold(strings.TrimSpace(m.sess.ActiveSkill.Name), strings.TrimSpace(result.Name)) {
+		if clearErr := m.runner.ClearActiveSkill(m.sess); clearErr == nil {
+			lines = append(lines, "Cleared active skill in this session as well.")
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(m.skillAuthorName), strings.TrimSpace(result.Name)) {
+		m.skillAuthorName = ""
+		m.skillAuthorMode = false
+		m.syncInputStyle()
+		lines = append(lines, "Deleted skill matched author mode target; author mode closed.")
+	}
+
+	m.appendCommandExchange(input, strings.Join(lines, "\n"))
+	m.statusNote = "Skill deleted"
 	return nil
 }
 
@@ -3208,7 +3327,7 @@ func (m *model) activateSkillCommand(input, name string, args map[string]string)
 		response += "\nArgs: " + strings.Join(argParts, ", ")
 	}
 	m.appendCommandExchange(input, response)
-	m.statusNote = "Skill activated."
+	m.statusNote = "Skill activated"
 	return nil
 }
 
@@ -3233,6 +3352,147 @@ func parseSkillArgs(parts []string) (map[string]string, error) {
 		return nil, nil
 	}
 	return args, nil
+}
+
+func parseSkillAuthorArgs(fields []string) (string, string, error) {
+	if len(fields) < 3 {
+		return "", "", fmt.Errorf("usage: /skill author [name]")
+	}
+	name := strings.TrimSpace(strings.TrimPrefix(fields[2], "/"))
+	if name == "" {
+		return "", "", fmt.Errorf("usage: /skill author [name]")
+	}
+	brief := strings.TrimSpace(strings.Join(fields[3:], " "))
+	return name, brief, nil
+}
+
+func parseSkillAuthorModeInput(value string) (string, string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", fmt.Errorf("please provide a skill name first, for example: review-plus")
+	}
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return "", "", fmt.Errorf("please provide a skill name first, for example: review-plus")
+	}
+	if len(fields) > 1 {
+		return "", "", fmt.Errorf("stage 1/2 expects only a skill name, for example: review-plus")
+	}
+	name := strings.TrimSpace(strings.TrimPrefix(fields[0], "/"))
+	if !isValidSkillAuthorName(name) {
+		return "", "", fmt.Errorf("invalid skill name: use letters, digits, or . _ : - , for example `review-plus`")
+	}
+	brief := strings.TrimSpace(strings.TrimPrefix(value, fields[0]))
+	return name, brief, nil
+}
+
+func isValidSkillAuthorName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+
+	runes := []rune(name)
+	for i, r := range runes {
+		isASCIIAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isASCIIDigit := r >= '0' && r <= '9'
+		if isASCIIAlpha || isASCIIDigit {
+			continue
+		}
+		if i > 0 && (r == '.' || r == '_' || r == ':' || r == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (m model) submitSkillAuthorInput(value string) (tea.Model, tea.Cmd) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return m, nil
+	}
+	m.input.Reset()
+
+	name := strings.TrimSpace(m.skillAuthorName)
+	brief := value
+	if name == "" {
+		var err error
+		name, brief, err = parseSkillAuthorModeInput(value)
+		if err != nil {
+			m.statusNote = err.Error()
+			m.appendCommandExchange(value, "Skill author mode notice:\n"+err.Error())
+			return m, nil
+		}
+		response, err := m.authorSkill(name, "")
+		if err != nil {
+			m.statusNote = err.Error()
+			m.appendCommandExchange(value, "Skill author mode notice:\n"+err.Error())
+			return m, nil
+		}
+		m.skillAuthorMode = true
+		m.skillAuthorName = name
+		m.syncInputStyle()
+		response += "\nEntered step 2/2 (content).\nContinue describing requirements; use `/skill author done` to exit."
+		m.appendCommandExchange(value, response)
+		m.statusNote = "Skill author mode: step 2/2 (content)"
+		return m, m.loadSessionsCmd()
+	}
+
+	response, err := m.authorSkill(name, brief)
+	if err != nil {
+		m.statusNote = err.Error()
+		m.appendCommandExchange(value, "Skill author mode notice:\n"+err.Error())
+		return m, nil
+	}
+
+	m.skillAuthorMode = true
+	m.skillAuthorName = name
+	m.syncInputStyle()
+	response += "\nCurrent step: 2/2 (content). Keep sending updates to refine; use `/skill author done` to exit."
+	m.appendCommandExchange(value, response)
+	m.statusNote = "Skill author mode: step 2/2 (content)"
+	return m, m.loadSessionsCmd()
+}
+
+func (m *model) authorSkill(name, brief string) (string, error) {
+	result, err := m.runner.AuthorSkill(name, brief)
+	if err != nil {
+		return "", err
+	}
+
+	state := "updated"
+	if result.Created {
+		state = "created"
+	} else {
+		state = "updated"
+	}
+	lines := []string{
+		fmt.Sprintf("Skill `%s` %s.", result.Name, state),
+		fmt.Sprintf("Dir: %s", result.Dir),
+		fmt.Sprintf("Manifest: %s", result.ManifestPath),
+		fmt.Sprintf("Skill doc: %s", result.SkillPath),
+		fmt.Sprintf("Activate with `/%s`.", result.Name),
+	}
+	if strings.TrimSpace(brief) == "" {
+		lines = append(lines, "Next: describe requirements in natural language and continue refining this skill.")
+	}
+
+	skillsList, diagnostics := m.runner.ListSkills()
+	for _, skill := range skillsList {
+		if !strings.EqualFold(strings.TrimSpace(skill.Name), strings.TrimSpace(result.Name)) {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("Resolved as: `%s` (%s).", skill.Name, skill.Scope))
+		break
+	}
+	for _, diag := range diagnostics {
+		if !strings.EqualFold(strings.TrimSpace(diag.Skill), strings.TrimSpace(result.Name)) {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("Diagnostic [%s] %s: %s", diag.Level, diag.Path, diag.Message))
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 func (m *model) appendCommandExchange(command, response string) {
@@ -3284,9 +3544,12 @@ func (m *model) newSession() error {
 	m.pendingBTW = nil
 	m.interrupting = false
 	m.interruptSafe = false
+	m.skillAuthorMode = false
+	m.skillAuthorName = ""
 	m.runCancel = nil
 	m.activeRunID = 0
 	m.input.Reset()
+	m.syncInputStyle()
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
 		m.refreshViewport()
@@ -3333,8 +3596,11 @@ func (m *model) resumeSession(prefix string) error {
 	m.pendingBTW = nil
 	m.interrupting = false
 	m.interruptSafe = false
+	m.skillAuthorMode = false
+	m.skillAuthorName = ""
 	m.runCancel = nil
 	m.activeRunID = 0
+	m.syncInputStyle()
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
 		m.refreshViewport()
@@ -4539,9 +4805,9 @@ func (m model) skillCommandItems() []commandItem {
 		}
 		seen[key] = struct{}{}
 
-		description := strings.TrimSpace(skill.Description)
+		description := localizedSkillDescriptionForTUI(skill.Name, string(skill.Scope), skill.Description)
 		if description == "" {
-			description = fmt.Sprintf("Activate %s for this session.", skill.Name)
+			description = fmt.Sprintf("Activate %s in this session.", skill.Name)
 		}
 		items = append(items, commandItem{
 			Name:        name,
@@ -4554,6 +4820,18 @@ func (m model) skillCommandItems() []commandItem {
 		return items[i].Usage < items[j].Usage
 	})
 	return items
+}
+
+func localizedSkillDescriptionForTUI(name, scope, fallback string) string {
+	fallback = strings.TrimSpace(fallback)
+	if !strings.EqualFold(strings.TrimSpace(scope), "builtin") {
+		return fallback
+	}
+	key := strings.ToLower(strings.TrimSpace(name))
+	if localized, ok := builtinSkillDescriptionsCN[key]; ok {
+		return localized
+	}
+	return fallback
 }
 
 func (m model) commandPaletteWidth() int {
@@ -4622,7 +4900,7 @@ func shouldExecuteFromPalette(item commandItem) bool {
 		return true
 	}
 	switch item.Name {
-	case "/help", "/session", "/skills", "/skill clear", "/new", "/compact", "/quit":
+	case "/help", "/session", "/skills", "/skill author", "/skill clear", "/new", "/compact", "/quit":
 		return true
 	default:
 		return false
@@ -4639,9 +4917,13 @@ func (m model) helpText() string {
 		"Slash commands",
 		"/help: show this help inside the conversation.",
 		"/session: open recent sessions.",
-		"/skills: list discovered skills and diagnostics.",
+		"/skills: list available skills and diagnostics.",
 		"/<skill-name> [k=v...]: activate a skill for this session.",
-		"/skill clear: clear the active skill.",
+		"/skill author: enter skill author mode (name first, then content).",
+		"/skill author [name]: create/update the skill and enter content stage.",
+		"/skill author done: exit skill author mode.",
+		"/skill clear: clear the active skill in this session.",
+		"/skill delete <name>: delete the specified project skill.",
 		"/new: start a fresh session.",
 		"/compact: summarize long history into a compact continuation context.",
 		"/btw <message>: interject while a run is in progress.",
@@ -4809,11 +5091,30 @@ func (m model) modeAccentColor() lipgloss.Color {
 func (m *model) syncInputStyle() {
 	if m.startupGuide.Active {
 		m.input.Placeholder = startupGuideInputPlaceholder(m.startupGuide.CurrentField)
+	} else if m.skillAuthorMode {
+		m.input.Placeholder = m.skillAuthorInputPlaceholder()
 	} else {
 		m.input.Placeholder = "Ask Bytemind to inspect, change, or verify this workspace..."
 	}
 	m.input.Prompt = ""
-	m.input.SetHeight(2)
+	setInputHeightSafe(&m.input, 2)
+}
+
+func (m model) skillAuthorInputPlaceholder() string {
+	if strings.TrimSpace(m.skillAuthorName) == "" {
+		return "Skill author mode step 1/2: enter only the skill name, for example: review-plus"
+	}
+	return "Skill author mode step 2/2 (" + strings.TrimSpace(m.skillAuthorName) + "): enter skill content and requirements..."
+}
+
+func setInputHeightSafe(input *textarea.Model, height int) {
+	if input == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	input.SetHeight(height)
 }
 
 func startupGuideInputHint(field string) string {

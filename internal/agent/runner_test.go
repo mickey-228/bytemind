@@ -1,4 +1,4 @@
-﻿package agent
+package agent
 
 import (
 	"context"
@@ -442,7 +442,7 @@ func TestGetTokenRealtimeSnapshotReturnsSessionAndGlobalStats(t *testing.T) {
 }
 
 func TestCompactWhitespacePreservesUTF8WhenTruncating(t *testing.T) {
-	text := "缁х画鍒氭墠鐨勪笂涓嬫枃锛岀粰鎴戝垪涓€涓嬪綋鍓嶄富 MVP 鏈€鍏抽敭鐨勬祴璇曠偣"
+	text := "Continue previous context and list the key MVP test points."
 	got := compactWhitespace(text, 18)
 	if strings.ContainsRune(got, '\uFFFD') {
 		t.Fatalf("expected valid utf-8 preview, got %q", got)
@@ -716,7 +716,7 @@ func TestAuthorSkillTranslatesChineseBriefToEnglish(t *testing.T) {
 		Registry: tools.DefaultRegistry(),
 	})
 
-	result, err := runner.AuthorSkill("review-plus", "用于代码评审，重点关注回归风险")
+	result, err := runner.AuthorSkill("review-plus", hanReviewBriefWithRisk())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -743,7 +743,7 @@ func TestAuthorSkillFallsBackToEnglishWhenTranslationFails(t *testing.T) {
 	workspace := t.TempDir()
 	client := &fakeClient{
 		replies: []llm.Message{
-			llm.NewAssistantTextMessage("用于代码评审"),
+			llm.NewAssistantTextMessage(hanReviewBrief()),
 		},
 	}
 	runner := NewRunner(Options{
@@ -756,7 +756,7 @@ func TestAuthorSkillFallsBackToEnglishWhenTranslationFails(t *testing.T) {
 		Registry: tools.DefaultRegistry(),
 	})
 
-	result, err := runner.AuthorSkill("review-plus", "用于代码评审")
+	result, err := runner.AuthorSkill("review-plus", hanReviewBrief())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -782,3 +782,14 @@ func containsHanForTest(text string) bool {
 	return false
 }
 
+func hanReviewBrief() string {
+	return string([]rune{0x7528, 0x4e8e, 0x4ee3, 0x7801, 0x8bc4, 0x5ba1})
+}
+
+func hanReviewBriefWithRisk() string {
+	return string([]rune{
+		0x7528, 0x4e8e, 0x4ee3, 0x7801, 0x8bc4, 0x5ba1,
+		0xff0c,
+		0x91cd, 0x70b9, 0x5173, 0x6ce8, 0x56de, 0x5f52, 0x98ce, 0x9669,
+	})
+}

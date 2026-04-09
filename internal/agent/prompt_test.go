@@ -169,31 +169,31 @@ func TestFormatSkillsLimitsAndSummarizesOverflow(t *testing.T) {
 	}
 }
 
-func TestFormatSkillsKeepsNonEnglishDescriptions(t *testing.T) {
+func TestFormatSkillsKeepsSkillDescriptionsAsIs(t *testing.T) {
 	got := formatSkills([]PromptSkill{
-		{Name: "review", Description: "以正确性为重点进行代码评审。", Enabled: true},
+		{Name: "review", Description: "Review with strict correctness focus.", Enabled: true},
 	})
 
-	assertContains(t, got, "- review: 以正确性为重点进行代码评审。 enabled=true")
+	assertContains(t, got, "- review: Review with strict correctness focus. enabled=true")
 }
 
-func TestRenderActiveSkillPromptKeepsNonEnglishFields(t *testing.T) {
+func TestRenderActiveSkillPromptKeepsSkillFieldsAsIs(t *testing.T) {
 	out := renderActiveSkillPrompt(&PromptActiveSkill{
 		Name:         "review",
-		Description:  "以正确性为重点进行代码评审。",
-		WhenToUse:    "当用户要求评审时使用。",
-		Instructions: "优先回归风险和测试缺口。",
+		Description:  "Review code changes with a strict correctness focus.",
+		WhenToUse:    "Use when the user asks for a code review.",
+		Instructions: "Prioritize regression risk and missing tests.",
 		Args: map[string]string{
-			"base_ref": "主分支",
+			"base_ref": "main",
 		},
 		ToolPolicy: "allowlist",
 		Tools:      []string{"read_file"},
 	})
 
-	assertContains(t, out, "Description: 以正确性为重点进行代码评审。")
-	assertContains(t, out, "When To Use: 当用户要求评审时使用。")
-	assertContains(t, out, "- base_ref=主分支")
-	assertContains(t, out, "优先回归风险和测试缺口。")
+	assertContains(t, out, "Description: Review code changes with a strict correctness focus.")
+	assertContains(t, out, "When To Use: Use when the user asks for a code review.")
+	assertContains(t, out, "- base_ref=main")
+	assertContains(t, out, "Prioritize regression risk and missing tests.")
 }
 
 func TestIsGitRepository(t *testing.T) {

@@ -1,4 +1,4 @@
-package tui
+package tokentui
 
 import (
 	"fmt"
@@ -17,6 +17,8 @@ const (
 )
 
 type tokenMonitorTickMsg time.Time
+
+type TickMsg = tokenMonitorTickMsg
 
 type tokenUsageComponent struct {
 	used        int
@@ -43,6 +45,19 @@ type rect struct {
 	y int
 	w int
 	h int
+}
+
+type Component = tokenUsageComponent
+
+type Rect struct {
+	X int
+	Y int
+	W int
+	H int
+}
+
+func NewComponent() Component {
+	return newTokenUsageComponent()
 }
 
 func newTokenUsageComponent() tokenUsageComponent {
@@ -99,6 +114,27 @@ func (c tokenUsageComponent) CompactView() string {
 
 func (c tokenUsageComponent) PopupView() string {
 	return ""
+}
+
+func (c tokenUsageComponent) TickCmd() tea.Cmd {
+	return c.tickCmd()
+}
+
+func (c tokenUsageComponent) Used() int {
+	return c.used
+}
+
+func (c tokenUsageComponent) Hovering() bool {
+	return c.hover
+}
+
+func (c tokenUsageComponent) Bounds() Rect {
+	return Rect{
+		X: c.bounds.x,
+		Y: c.bounds.y,
+		W: c.bounds.w,
+		H: c.bounds.h,
+	}
 }
 
 func (c *tokenUsageComponent) Update(msg tea.Msg) (tea.Cmd, bool) {
@@ -408,4 +444,21 @@ func readEnvFlag(key string) bool {
 	default:
 		return false
 	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func clamp(value, low, high int) int {
+	if value < low {
+		return low
+	}
+	if value > high {
+		return high
+	}
+	return value
 }

@@ -22,6 +22,7 @@ import (
 	planpkg "bytemind/internal/plan"
 	"bytemind/internal/provider"
 	"bytemind/internal/session"
+	tokentui "bytemind/internal/token/tui"
 	"bytemind/internal/tools"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -245,7 +246,7 @@ type model struct {
 	chatAutoFollow        bool
 	draggingScrollbar     bool
 	scrollbarDragOffset   int
-	tokenUsage            tokenUsageComponent
+	tokenUsage            tokentui.Component
 	tokenUsedTotal        int
 	tokenBudget           int
 	tokenInput            int
@@ -253,7 +254,7 @@ type model struct {
 	tokenContext          int
 	tokenHasOfficialUsage bool
 	tempEstimatedOutput   int
-	tokenEstimator        *realtimeTokenEstimator
+	tokenEstimator        *tokentui.RealtimeEstimator
 	promptHistoryLoaded   bool
 	promptHistoryEntries  []history.PromptEntry
 	promptSearchMode      promptSearchMode
@@ -338,9 +339,9 @@ func newModel(opts Options) model {
 		llmConnected:       true,
 		chatAutoFollow:     true,
 		mentionIndex:       mention.NewWorkspaceFileIndex(opts.Workspace),
-		tokenUsage:         newTokenUsageComponent(),
+		tokenUsage:         tokentui.NewComponent(),
 		tokenBudget:        max(1, opts.Config.TokenQuota),
-		tokenEstimator:     newRealtimeTokenEstimator(opts.Config.Provider.Model),
+		tokenEstimator:     tokentui.NewRealtimeTokenEstimator(opts.Config.Provider.Model),
 		inputImageRefs:     make(map[int]llm.AssetID, 8),
 		inputImageMentions: make(map[string]llm.AssetID, 8),
 		orphanedImages:     make(map[llm.AssetID]time.Time, 8),
@@ -371,7 +372,7 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
 		waitForAsync(m.async),
-		m.tokenUsage.tickCmd(),
+		m.tokenUsage.TickCmd(),
 		m.loadSessionsCmd(),
 	)
 }
@@ -469,7 +470,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tokenUsagePulledMsg:
 		// Account-level usage is not session-accurate; ignore in session-only mode.
 		return m, nil
-	case tokenMonitorTickMsg:
+	case tokentui.TickMsg:
 		cmd, _ := m.tokenUsage.Update(msg)
 		return m, cmd
 	case tea.MouseMsg:
@@ -3236,7 +3237,7 @@ func (m model) loadSessionsCmd() tea.Cmd {
 
 func (m model) fetchRemoteTokenUsageCmd() tea.Cmd {
 	return func() tea.Msg {
-		usage, err := fetchCurrentMonthUsage(m.cfg)
+		usage, err := tokentui.FetchCurrentMonthUsage(m.cfg)
 		if err != nil {
 			return tokenUsagePulledMsg{Err: err}
 		}

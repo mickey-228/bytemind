@@ -15,7 +15,7 @@ import (
 	planpkg "bytemind/internal/plan"
 	"bytemind/internal/session"
 	"bytemind/internal/skills"
-	"bytemind/internal/tokenusage"
+	tokenusage "bytemind/internal/token/usage"
 	"bytemind/internal/tools"
 )
 

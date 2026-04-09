@@ -1,4 +1,4 @@
-package tui
+package tokentui
 
 import "testing"
 
@@ -28,4 +28,3 @@ func TestRealtimeTokenEstimatorInitialization(t *testing.T) {
 		t.Fatalf("expected invalid model to fall back to a base tokenizer")
 	}
 }
-

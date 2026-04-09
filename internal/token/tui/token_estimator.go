@@ -1,4 +1,4 @@
-package tui
+package tokentui
 
 import (
 	"math"
@@ -9,6 +9,16 @@ import (
 
 type realtimeTokenEstimator struct {
 	encoder *tiktoken.Tiktoken
+}
+
+type RealtimeEstimator = realtimeTokenEstimator
+
+func NewRealtimeTokenEstimator(model string) *RealtimeEstimator {
+	return newRealtimeTokenEstimator(model)
+}
+
+func EstimateDeltaTokens(estimator *RealtimeEstimator, text string) int {
+	return estimateDeltaTokens(estimator, text)
 }
 
 func newRealtimeTokenEstimator(model string) *realtimeTokenEstimator {

@@ -14,7 +14,7 @@ import (
 	"bytemind/internal/config"
 	"bytemind/internal/llm"
 	"bytemind/internal/session"
-	"bytemind/internal/tokenusage"
+	tokenusage "bytemind/internal/token/usage"
 	"bytemind/internal/tools"
 )
 

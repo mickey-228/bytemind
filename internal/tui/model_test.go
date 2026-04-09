@@ -19,6 +19,7 @@ import (
 	"bytemind/internal/mention"
 	planpkg "bytemind/internal/plan"
 	"bytemind/internal/session"
+	tokentui "bytemind/internal/token/tui"
 	"bytemind/internal/tools"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -26,6 +27,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestHandleMouseScrollsViewport(t *testing.T) {
 	m := model{
@@ -213,10 +220,9 @@ func TestRenderMainPanelShowsTokenUsageBadge(t *testing.T) {
 		height:     28,
 		input:      textarea.New(),
 		viewport:   viewport.New(60, 10),
-		tokenUsage: newTokenUsageComponent(),
+		tokenUsage: tokentui.NewComponent(),
 	}
 	m.viewport.SetContent(strings.Repeat("line\n", 40))
-	m.tokenUsage.displayUsed = 1234
 	_ = m.tokenUsage.SetUsage(1234, 5000)
 
 	panel := m.renderMainPanel()
@@ -232,28 +238,29 @@ func TestHandleMouseHoverTokenUsageConsumesEvent(t *testing.T) {
 		height:     28,
 		input:      textarea.New(),
 		viewport:   viewport.New(60, 10),
-		tokenUsage: newTokenUsageComponent(),
+		tokenUsage: tokentui.NewComponent(),
 	}
 	m.viewport.SetContent(strings.Repeat("line\n", 60))
 	_ = m.tokenUsage.SetUsage(1500, 5000)
 	m.refreshViewport()
 
-	x := m.tokenUsage.bounds.x + max(0, m.tokenUsage.bounds.w/2)
-	y := m.tokenUsage.bounds.y
+	bounds := m.tokenUsage.Bounds()
+	x := bounds.X + max(0, bounds.W/2)
+	y := bounds.Y
 	got, _ := m.handleMouse(tea.MouseMsg{
 		Action: tea.MouseActionMotion,
 		X:      x,
 		Y:      y,
 	})
 	updated := got.(model)
-	if !updated.tokenUsage.hover {
+	if !updated.tokenUsage.Hovering() {
 		t.Fatalf("expected hover state to activate over token badge")
 	}
 }
 
 func TestHandleAgentEventUsageUpdatedAccumulatesRealTokens(t *testing.T) {
 	m := model{
-		tokenUsage:  newTokenUsageComponent(),
+		tokenUsage:  tokentui.NewComponent(),
 		tokenBudget: 5000,
 	}
 
@@ -273,14 +280,14 @@ func TestHandleAgentEventUsageUpdatedAccumulatesRealTokens(t *testing.T) {
 	if m.tokenInput != 120 || m.tokenOutput != 40 || m.tokenContext != 30 {
 		t.Fatalf("unexpected token breakdown input=%d output=%d context=%d", m.tokenInput, m.tokenOutput, m.tokenContext)
 	}
-	if m.tokenUsage.used != 190 {
-		t.Fatalf("expected token component used value 190, got %d", m.tokenUsage.used)
+	if m.tokenUsage.Used() != 190 {
+		t.Fatalf("expected token component used value 190, got %d", m.tokenUsage.Used())
 	}
 }
 
 func TestAssistantDeltaDoesNotChangeUsageWithoutOfficialUsage(t *testing.T) {
 	m := model{
-		tokenUsage:  newTokenUsageComponent(),
+		tokenUsage:  tokentui.NewComponent(),
 		tokenBudget: 5000,
 	}
 
@@ -314,7 +321,7 @@ func TestAssistantDeltaDoesNotChangeUsageWithoutOfficialUsage(t *testing.T) {
 
 func TestApplyUsageFallsBackToBreakdownWhenTotalIsZero(t *testing.T) {
 	m := model{
-		tokenUsage:  newTokenUsageComponent(),
+		tokenUsage:  tokentui.NewComponent(),
 		tokenBudget: 5000,
 	}
 
@@ -387,7 +394,7 @@ func TestFetchRemoteTokenUsageCmdReturnsUsageMsgOnSuccess(t *testing.T) {
 
 func TestUpdateTokenUsagePulledMsgIgnoredForSessionOnly(t *testing.T) {
 	m := model{
-		tokenUsage:     newTokenUsageComponent(),
+		tokenUsage:     tokentui.NewComponent(),
 		tokenBudget:    5000,
 		tokenUsedTotal: 100,
 		tokenInput:     60,
@@ -3785,7 +3792,7 @@ func TestScrollbarTrackBoundsAndDragScrollbarTo(t *testing.T) {
 		height:     32,
 		input:      input,
 		viewport:   viewport.New(60, 10),
-		tokenUsage: newTokenUsageComponent(),
+		tokenUsage: tokentui.NewComponent(),
 		chatItems: []chatEntry{
 			{Kind: "assistant", Body: strings.Repeat("line\n", 260), Status: "final"},
 		},
@@ -3841,7 +3848,7 @@ func TestHandleMouseScrollbarDragLifecycle(t *testing.T) {
 		height:         32,
 		input:          input,
 		viewport:       viewport.New(60, 10),
-		tokenUsage:     newTokenUsageComponent(),
+		tokenUsage:     tokentui.NewComponent(),
 		chatAutoFollow: true,
 		chatItems: []chatEntry{
 			{Kind: "assistant", Body: strings.Repeat("row\n", 280), Status: "final"},
@@ -3904,7 +3911,7 @@ func TestHandleMouseGuardBranchesAndThumbPress(t *testing.T) {
 		height:            28,
 		input:             input,
 		viewport:          viewport.New(60, 10),
-		tokenUsage:        newTokenUsageComponent(),
+		tokenUsage:        tokentui.NewComponent(),
 		draggingScrollbar: true,
 		helpOpen:          true,
 	}
@@ -3950,7 +3957,7 @@ func TestHandleMouseGuardBranchesAndThumbPress(t *testing.T) {
 		height:     32,
 		input:      input,
 		viewport:   viewport.New(60, 10),
-		tokenUsage: newTokenUsageComponent(),
+		tokenUsage: tokentui.NewComponent(),
 		chatItems: []chatEntry{
 			{Kind: "assistant", Body: strings.Repeat("thumb\n", 220), Status: "final"},
 		},
@@ -3987,10 +3994,9 @@ func TestRenderTokenBadgeAndScrollbarHelpers(t *testing.T) {
 		height:     30,
 		input:      textarea.New(),
 		viewport:   viewport.New(50, 8),
-		tokenUsage: newTokenUsageComponent(),
+		tokenUsage: tokentui.NewComponent(),
 	}
 	m.viewport.SetContent(strings.Repeat("line\n", 120))
-	m.tokenUsage.displayUsed = 2345
 	_ = m.tokenUsage.SetUsage(2345, 5000)
 	m.refreshViewport()
 

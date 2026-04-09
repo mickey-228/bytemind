@@ -1,4 +1,4 @@
-package tui
+package tokentui
 
 import (
 	"encoding/json"
@@ -17,6 +17,16 @@ type remoteTokenUsage struct {
 	Input   int
 	Output  int
 	Context int
+}
+
+type RemoteUsage = remoteTokenUsage
+
+func FetchCurrentMonthUsage(cfg config.Config) (RemoteUsage, error) {
+	return fetchCurrentMonthUsage(cfg)
+}
+
+func NormalizeOpenAIBaseURL(baseURL string) string {
+	return normalizeOpenAIBaseURL(baseURL)
 }
 
 func fetchCurrentMonthUsage(cfg config.Config) (remoteTokenUsage, error) {

@@ -1,4 +1,4 @@
-package tui
+package tokentui
 
 import (
 	"errors"
@@ -157,4 +157,3 @@ func TestNormalizeOpenAIBaseURL(t *testing.T) {
 		t.Fatalf("expected /v1 suffix to be appended, got %q", got)
 	}
 }
-

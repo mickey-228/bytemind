@@ -22,7 +22,6 @@ import (
 	planpkg "bytemind/internal/plan"
 	"bytemind/internal/provider"
 	"bytemind/internal/session"
-	tokentui "bytemind/internal/token/tui"
 	"bytemind/internal/tools"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -257,7 +256,7 @@ type model struct {
 	chatAutoFollow        bool
 	draggingScrollbar     bool
 	scrollbarDragOffset   int
-	tokenUsage            tokentui.Component
+	tokenUsage            tokenUsageComponent
 	tokenUsedTotal        int
 	tokenBudget           int
 	tokenInput            int
@@ -265,7 +264,7 @@ type model struct {
 	tokenContext          int
 	tokenHasOfficialUsage bool
 	tempEstimatedOutput   int
-	tokenEstimator        *tokentui.RealtimeEstimator
+	tokenEstimator        *realtimeTokenEstimator
 	promptHistoryLoaded   bool
 	promptHistoryEntries  []history.PromptEntry
 	promptSearchMode      promptSearchMode
@@ -357,9 +356,9 @@ func newModel(opts Options) model {
 		llmConnected:       true,
 		chatAutoFollow:     true,
 		mentionIndex:       mention.NewWorkspaceFileIndex(opts.Workspace),
-		tokenUsage:         tokentui.NewComponent(),
+		tokenUsage:         newTokenUsageComponent(),
 		tokenBudget:        max(1, opts.Config.TokenQuota),
-		tokenEstimator:     tokentui.NewRealtimeTokenEstimator(opts.Config.Provider.Model),
+		tokenEstimator:     newRealtimeTokenEstimator(opts.Config.Provider.Model),
 		inputImageRefs:     make(map[int]llm.AssetID, 8),
 		inputImageMentions: make(map[string]llm.AssetID, 8),
 		orphanedImages:     make(map[llm.AssetID]time.Time, 8),
@@ -394,7 +393,7 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
 		waitForAsync(m.async),
-		m.tokenUsage.TickCmd(),
+		m.tokenUsage.tickCmd(),
 		m.loadSessionsCmd(),
 	)
 }
@@ -492,7 +491,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tokenUsagePulledMsg:
 		// Account-level usage is not session-accurate; ignore in session-only mode.
 		return m, nil
-	case tokentui.TickMsg:
+	case tokenMonitorTickMsg:
 		cmd, _ := m.tokenUsage.Update(msg)
 		return m, cmd
 	case tea.MouseMsg:
@@ -2666,7 +2665,7 @@ func (m *model) verifyAndFinalizeStartupAPIKey(rawInput string) error {
 	checkCfg := m.cfg.Provider
 	checkCfg.APIKey = apiKey
 	check := provider.CheckAvailability(context.Background(), checkCfg)
-	if !check.Ready && !shouldAllowStartupSaveWithoutVerification(check) {
+	if !check.Ready {
 		m.llmConnected = false
 		m.phase = "error"
 		m.setStartupGuideStep(startupFieldAPIKey, startupGuideIssueHint(check))
@@ -2690,40 +2689,17 @@ func (m *model) verifyAndFinalizeStartupAPIKey(rawInput string) error {
 	}
 	m.cfg.Provider = checkCfg
 	m.startupGuide.Active = false
-	if check.Ready {
-		m.statusNote = "Provider configured and verified. You can start chatting."
-		m.llmConnected = true
-	} else {
-		m.statusNote = "API key saved. Provider verification is temporarily unavailable; you can continue and retry later."
-		m.llmConnected = false
-	}
+	m.statusNote = "Provider configured and verified. You can start chatting."
+	m.llmConnected = true
 	m.phase = "idle"
 	if saveErr != nil {
-		m.statusNote = "API key saved in memory, but config save failed: " + compact(saveErr.Error(), 80)
+		m.statusNote = "Provider verified, but config save failed: " + compact(saveErr.Error(), 80)
 	} else if strings.TrimSpace(writtenPath) != "" {
-		if check.Ready {
-			m.statusNote = "Provider configured and verified. Saved to " + compact(writtenPath, 48)
-		} else {
-			m.statusNote = "API key saved to " + compact(writtenPath, 48) + ". Verification skipped due temporary endpoint reachability issue."
-		}
+		m.statusNote = "Provider configured and verified. Saved to " + compact(writtenPath, 48)
 	}
 	m.syncInputStyle()
 	m.input.Reset()
 	return nil
-}
-
-func shouldAllowStartupSaveWithoutVerification(check provider.Availability) bool {
-	reason := strings.ToLower(strings.TrimSpace(check.Reason))
-	switch {
-	case strings.Contains(reason, "failed to reach provider endpoint"):
-		return true
-	case strings.Contains(reason, "provider check failed (http 5"):
-		return true
-	case strings.Contains(reason, "provider check failed (http 429"):
-		return true
-	default:
-		return false
-	}
 }
 
 func (m *model) applyStartupConfigField(field, value string) error {
@@ -3674,7 +3650,7 @@ func (m model) loadSessionsCmd() tea.Cmd {
 
 func (m model) fetchRemoteTokenUsageCmd() tea.Cmd {
 	return func() tea.Msg {
-		usage, err := tokentui.FetchCurrentMonthUsage(m.cfg)
+		usage, err := fetchCurrentMonthUsage(m.cfg)
 		if err != nil {
 			return tokenUsagePulledMsg{Err: err}
 		}
@@ -4041,62 +4017,28 @@ func renderAssistantBody(text string, width int) string {
 	lines := strings.Split(text, "\n")
 	out := make([]string, 0, len(lines))
 	inCodeBlock := false
-	codeLines := make([]string, 0, 16)
 	prevBlank := true
-	flushCodeBlock := func() {
-		if len(codeLines) == 0 {
-			return
-		}
-		out = append(out, renderMarkdownCodeBlock(codeLines, width))
-		codeLines = codeLines[:0]
-		prevBlank = false
-	}
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
-			if inCodeBlock {
-				flushCodeBlock()
-				inCodeBlock = false
-			} else {
-				inCodeBlock = true
-				codeLines = codeLines[:0]
-			}
+			inCodeBlock = !inCodeBlock
 			continue
 		}
 
-		if inCodeBlock {
-			codeLines = append(codeLines, line)
-			continue
+		plainLine := line
+		if !inCodeBlock {
+			plainLine = normalizeAssistantMarkdownLine(line)
 		}
-
-		if trimmed == "" {
+		if strings.TrimSpace(plainLine) == "" {
 			if !prevBlank {
 				out = append(out, "")
 			}
 			prevBlank = true
 			continue
 		}
-
-		switch {
-		case isMarkdownHeading(trimmed):
-			out = append(out, renderMarkdownHeading(trimmed, width))
-		case isMarkdownListItem(trimmed):
-			out = append(out, renderMarkdownListItem(trimmed, width))
-		case strings.HasPrefix(trimmed, ">"):
-			out = append(out, renderMarkdownQuote(trimmed, width))
-		default:
-			plainLine := normalizeAssistantMarkdownLine(line)
-			if strings.TrimSpace(plainLine) == "" {
-				continue
-			}
-			out = append(out, wrapPlainText(plainLine, width))
-		}
+		out = append(out, wrapPlainText(plainLine, width))
 		prevBlank = false
-	}
-
-	if inCodeBlock {
-		flushCodeBlock()
 	}
 
 	return strings.Join(out, "\n")
@@ -4338,29 +4280,12 @@ func renderMarkdownListItem(line string, width int) string {
 	lines := make([]string, 0, len(wrapped))
 	for i, part := range wrapped {
 		if i == 0 {
-			lines = append(lines, listMarkerStyle.Render(indent+marker+" "+part))
+			lines = append(lines, indent+listMarkerStyle.Render(marker)+" "+part)
 			continue
 		}
 		lines = append(lines, indent+strings.Repeat(" ", runewidth.StringWidth(marker))+" "+part)
 	}
 	return strings.Join(lines, "\n")
-}
-
-func renderMarkdownCodeBlock(codeLines []string, width int) string {
-	if len(codeLines) == 0 {
-		return ""
-	}
-	blockWidth := max(12, width)
-	contentWidth := max(8, blockWidth-codeStyle.GetHorizontalFrameSize())
-	rendered := make([]string, 0, len(codeLines))
-	for _, line := range codeLines {
-		if line == "" {
-			rendered = append(rendered, "")
-			continue
-		}
-		rendered = append(rendered, strings.Split(wrapPlainText(line, contentWidth), "\n")...)
-	}
-	return codeStyle.Width(blockWidth).Render(strings.Join(rendered, "\n"))
 }
 
 func renderMarkdownQuote(line string, width int) string {

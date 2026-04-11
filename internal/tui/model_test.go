@@ -4264,6 +4264,46 @@ func TestFormatChatBodyRendersMarkdownHeadingWithoutHashes(t *testing.T) {
 	}
 }
 
+func TestFormatChatBodyHelpMarkdownAppliesVisualStyles(t *testing.T) {
+	item := chatEntry{
+		Kind: "assistant",
+		Body: "# Bytemind Help\n## Entry Points\n- `/help`: show help",
+	}
+
+	got := formatChatBody(item, 80)
+	if !strings.Contains(got, "Bytemind Help") {
+		t.Fatalf("expected help title text to remain, got %q", got)
+	}
+	if !strings.Contains(got, "`/help`") {
+		t.Fatalf("expected help markdown list to keep inline command formatting, got %q", got)
+	}
+}
+
+func TestFormatChatBodyHighlightsSemanticChineseLines(t *testing.T) {
+	item := chatEntry{
+		Kind: "assistant",
+		Body: "第一阶段：基础准备（1-2个月）\n学习内容：\n目标：建立基础能力",
+	}
+	got := formatChatBody(item, 80)
+	if !strings.Contains(got, "第一阶段") || !strings.Contains(got, "学习内容：") || !strings.Contains(got, "目标：") {
+		t.Fatalf("expected semantic lines to remain, got %q", got)
+	}
+	if !strings.Contains(got, "目标： 建立基础能力") {
+		t.Fatalf("expected semantic key-value line formatting, got %q", got)
+	}
+}
+
+func TestFormatChatBodyNonAssistantUsesSemanticHighlightPipeline(t *testing.T) {
+	item := chatEntry{
+		Kind: "system",
+		Body: "注意：该操作不可撤销\n目标：先备份数据",
+	}
+	got := formatChatBody(item, 80)
+	if !strings.Contains(got, "注意： 该操作不可撤销") || !strings.Contains(got, "目标： 先备份数据") {
+		t.Fatalf("expected semantic plain body rendering, got %q", got)
+	}
+}
+
 func TestFormatChatBodyRendersCodeBlockWithoutFences(t *testing.T) {
 	item := chatEntry{
 		Kind: "assistant",

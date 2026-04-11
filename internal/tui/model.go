@@ -2558,8 +2558,11 @@ func (m model) renderSessionsModal() string {
 }
 
 func (m model) renderHelpModal() string {
-	return modalBoxStyle.Width(min(88, max(54, m.width-16))).Render(
-		lipgloss.JoinVertical(lipgloss.Left, modalTitleStyle.Render("Help"), m.helpText()),
+	modalWidth := min(88, max(54, m.width-16))
+	innerWidth := max(20, modalWidth-modalBoxStyle.GetHorizontalFrameSize())
+	body := renderHelpMarkdown(m.helpText(), innerWidth)
+	return modalBoxStyle.Width(modalWidth).Render(
+		lipgloss.JoinVertical(lipgloss.Left, modalTitleStyle.Render("Help"), body),
 	)
 }
 
@@ -3795,10 +3798,77 @@ func renderModal(width, height int, modal string) string {
 
 func formatChatBody(item chatEntry, width int) string {
 	text := strings.ReplaceAll(item.Body, "\r\n", "\n")
-	if item.Kind != "assistant" {
+	if item.Kind == "user" {
 		return strings.TrimRight(wrapPlainText(text, width), "\n")
 	}
+	if item.Kind != "assistant" {
+		return strings.TrimRight(renderSemanticPlainBody(text, width), "\n")
+	}
+	if isHelpMarkdownText(text) {
+		return strings.TrimRight(renderHelpMarkdown(text, width), "\n")
+	}
 	return strings.TrimRight(renderAssistantBody(text, width), "\n")
+}
+
+func isHelpMarkdownText(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), "# Bytemind Help")
+}
+
+func renderHelpMarkdown(text string, width int) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	prevBlank := true
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if !prevBlank {
+				out = append(out, "")
+			}
+			prevBlank = true
+			continue
+		}
+
+		switch {
+		case isMarkdownHeading(trimmed):
+			out = append(out, renderMarkdownHeading(trimmed, width))
+		case isMarkdownListItem(trimmed):
+			out = append(out, renderMarkdownListItem(trimmed, width))
+		case strings.HasPrefix(trimmed, "> "):
+			out = append(out, renderMarkdownQuote(trimmed, width))
+		default:
+			plainLine := normalizeAssistantMarkdownLine(line)
+			if strings.TrimSpace(plainLine) == "" {
+				if !prevBlank {
+					out = append(out, "")
+				}
+				prevBlank = true
+				continue
+			}
+			out = append(out, wrapPlainText(plainLine, width))
+		}
+		prevBlank = false
+	}
+	return strings.Join(out, "\n")
+}
+
+func renderSemanticPlainBody(text string, width int) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	prevBlank := true
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if !prevBlank {
+				out = append(out, "")
+			}
+			prevBlank = true
+			continue
+		}
+		rendered := renderSemanticAssistantLine(line, width)
+		out = append(out, rendered)
+		prevBlank = false
+	}
+	return strings.Join(out, "\n")
 }
 
 func wrapPlainText(text string, width int) string {
@@ -3946,10 +4016,21 @@ func renderAssistantBody(text string, width int) string {
 			continue
 		}
 
-		plainLine := line
-		if !inCodeBlock {
-			plainLine = normalizeAssistantMarkdownLine(line)
+		if inCodeBlock {
+			codeLine := strings.TrimRight(wrapPlainText(line, width), "\n")
+			if strings.TrimSpace(codeLine) == "" {
+				if !prevBlank {
+					out = append(out, "")
+				}
+				prevBlank = true
+				continue
+			}
+			out = append(out, codeStyle.Render(codeLine))
+			prevBlank = false
+			continue
 		}
+
+		plainLine := normalizeAssistantMarkdownLine(line)
 		if strings.TrimSpace(plainLine) == "" {
 			if !prevBlank {
 				out = append(out, "")
@@ -3957,11 +4038,209 @@ func renderAssistantBody(text string, width int) string {
 			prevBlank = true
 			continue
 		}
-		out = append(out, wrapPlainText(plainLine, width))
+
+		switch {
+		case isMarkdownHeading(strings.TrimSpace(plainLine)):
+			out = append(out, renderMarkdownHeading(strings.TrimSpace(plainLine), width))
+		case strings.HasPrefix(strings.TrimSpace(plainLine), "> "):
+			out = append(out, renderMarkdownQuote(strings.TrimSpace(plainLine), width))
+		default:
+			out = append(out, renderSemanticAssistantLine(plainLine, width))
+		}
 		prevBlank = false
 	}
 
 	return strings.Join(out, "\n")
+}
+
+func renderSemanticAssistantLine(line string, width int) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return ""
+	}
+
+	listPrefix, core, isList := splitSemanticListPrefix(trimmed)
+	if core == "" {
+		core = trimmed
+	}
+
+	if isDocumentTitleLine(core) {
+		wrapped := strings.Split(wrapPlainText(core, width), "\n")
+		for i := range wrapped {
+			wrapped[i] = assistantHeading1Style.Render(wrapped[i])
+		}
+		return joinWithListPrefix(listPrefix, wrapped, isList)
+	}
+
+	if isStageTitleLine(core) {
+		wrapped := strings.Split(wrapPlainText(core, max(8, width-runewidth.StringWidth(listPrefix))), "\n")
+		for i := range wrapped {
+			wrapped[i] = assistantHeading2Style.Render(wrapped[i])
+		}
+		wrapped = applyIntentStyleToLines(core, wrapped)
+		return joinWithListPrefix(listPrefix, wrapped, isList)
+	}
+
+	if isSectionTitleLine(core) {
+		wrapped := strings.Split(wrapPlainText(core, max(8, width-runewidth.StringWidth(listPrefix))), "\n")
+		for i := range wrapped {
+			wrapped[i] = accentStyle.Render(wrapped[i])
+		}
+		wrapped = applyIntentStyleToLines(core, wrapped)
+		return joinWithListPrefix(listPrefix, wrapped, isList)
+	}
+
+	label, rest, ok := splitSemanticLabel(core)
+	if !ok {
+		wrapped := strings.Split(wrapPlainText(core, max(8, width-runewidth.StringWidth(listPrefix))), "\n")
+		wrapped = applyIntentStyleToLines(core, wrapped)
+		return joinWithListPrefix(listPrefix, wrapped, isList)
+	}
+	prefix := accentStyle.Render(label)
+	if rest == "" {
+		lines := []string{prefix}
+		lines = applyIntentStyleToLines(core, lines)
+		return joinWithListPrefix(listPrefix, lines, isList)
+	}
+
+	prefixWidth := runewidth.StringWidth(listPrefix) + runewidth.StringWidth(label+" ")
+	contentWidth := max(8, width-prefixWidth)
+	wrapped := strings.Split(wrapPlainText(rest, contentWidth), "\n")
+	lines := make([]string, 0, len(wrapped))
+	for i, part := range wrapped {
+		if i == 0 {
+			lines = append(lines, prefix+" "+part)
+			continue
+		}
+		lines = append(lines, strings.Repeat(" ", runewidth.StringWidth(label+" "))+part)
+	}
+	lines = applyIntentStyleToLines(core, lines)
+	return joinWithListPrefix(listPrefix, lines, isList)
+}
+
+func isStageTitleLine(line string) bool {
+	if strings.HasPrefix(line, "第") && strings.Contains(line, "阶段") {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(line), "phase ")
+}
+
+func isSectionTitleLine(line string) bool {
+	if !(strings.HasSuffix(line, "：") || strings.HasSuffix(line, ":")) {
+		return false
+	}
+	body := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(line, "："), ":"))
+	if body == "" || runewidth.StringWidth(body) > 20 {
+		return false
+	}
+	return !strings.Contains(body, " ")
+}
+
+func splitSemanticLabel(line string) (label string, rest string, ok bool) {
+	sep := "："
+	idx := strings.Index(line, sep)
+	if idx < 0 {
+		sep = ":"
+		idx = strings.Index(line, sep)
+	}
+	if idx <= 0 {
+		return "", "", false
+	}
+	left := strings.TrimSpace(line[:idx])
+	right := strings.TrimSpace(line[idx+len(sep):])
+	if left == "" || runewidth.StringWidth(left) > 10 {
+		return "", "", false
+	}
+	if strings.Contains(left, " ") {
+		return "", "", false
+	}
+	return left + sep, right, true
+}
+
+func applyLineIntentStyle(rawLine, renderedLine string) string {
+	line := strings.TrimSpace(strings.ToLower(rawLine))
+	switch {
+	case hasAnyPrefix(line, "注意", "警告", "warning", "warn", "⚠"):
+		return warnStyle.Render(renderedLine)
+	case hasAnyPrefix(line, "错误", "失败", "error", "fatal", "✗", "x "):
+		return errorStyle.Render(renderedLine)
+	case hasAnyPrefix(line, "成功", "完成", "success", "✓", "ok "):
+		return doneStyle.Render(renderedLine)
+	case hasAnyPrefix(line, "提示", "说明", "信息", "info", "ℹ"):
+		return mutedStyle.Copy().Faint(false).Render(renderedLine)
+	default:
+		return renderedLine
+	}
+}
+
+func applyIntentStyleToLines(rawLine string, lines []string) []string {
+	if len(lines) == 0 {
+		return lines
+	}
+	out := make([]string, len(lines))
+	for i := range lines {
+		out[i] = applyLineIntentStyle(rawLine, lines[i])
+	}
+	return out
+}
+
+func splitSemanticListPrefix(line string) (prefix string, core string, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "+ ") {
+		return trimmed[:2], strings.TrimSpace(trimmed[2:]), true
+	}
+	if marker, rest, found := splitOrderedListItem(trimmed); found {
+		return marker + " ", strings.TrimSpace(rest), true
+	}
+	return "", trimmed, false
+}
+
+func joinWithListPrefix(prefix string, lines []string, isList bool) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	if !isList || strings.TrimSpace(prefix) == "" {
+		return strings.Join(lines, "\n")
+	}
+	prefixGlyph := strings.TrimSpace(prefix)
+	prefixIndent := strings.Repeat(" ", runewidth.StringWidth(prefix))
+	out := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if i == 0 {
+			out = append(out, prefixGlyph+" "+line)
+			continue
+		}
+		out = append(out, prefixIndent+line)
+	}
+	return strings.Join(out, "\n")
+}
+
+func isDocumentTitleLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	if strings.ContainsAny(line, "：:") {
+		return false
+	}
+	if runewidth.StringWidth(line) > 24 {
+		return false
+	}
+	for _, suffix := range []string{"计划", "方案", "报告", "总结", "清单", "路线图"} {
+		if strings.HasSuffix(line, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnyPrefix(s string, prefixes ...string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
 }
 
 var assistantInlineTokenReplacer = strings.NewReplacer(
@@ -4843,35 +5122,37 @@ func shouldExecuteFromPalette(item commandItem) bool {
 
 func (m model) helpText() string {
 	return strings.Join([]string{
-		"Entry points",
-		"Run `go run ./cmd/bytemind chat` from the repository root to open the TUI.",
-		"The chat command opens the landing screen first, then enters the conversation view after you submit a prompt.",
-		"Run `go run ./cmd/bytemind run -prompt \"...\"` for one-shot execution.",
+		"# Bytemind Help",
 		"",
-		"Slash commands",
-		"/help: show this help inside the conversation.",
-		"/session: open recent sessions.",
-		"/skills: list discovered skills and diagnostics.",
-		"/<skill-name> [k=v...]: activate a skill for this session.",
-		"/skill clear: clear the active skill in this session.",
-		"/skill delete <name>: delete the specified project skill.",
-		"/new: start a fresh session.",
-		"/compact: summarize long history into a compact continuation context.",
-		"/btw <message>: interject while a run is in progress.",
-		"/quit: exit the TUI.",
+		"## Entry Points",
+		"- Run `go run ./cmd/bytemind chat` from the repository root to open the TUI.",
+		"- `chat` opens the landing screen first, then enters conversation view after you submit a prompt.",
+		"- Run `go run ./cmd/bytemind run -prompt \"...\"` for one-shot execution.",
 		"",
-		"UI notes",
-		"Tab toggles between Build and Plan modes.",
-		"Plan mode keeps the plan panel visible and focused on structured steps.",
-		"Use Ctrl+G to open or close the help panel.",
-		"Use Ctrl+F to search prompt history and restore previous input.",
-		"Drag across the conversation with the left mouse button to select text, then press Ctrl+C to copy it.",
-		"If provider setup is required, paste an API key in the input and press Enter.",
-		"Long pasted code/text is compressed to [Paste #N ~X lines].",
-		"Use [Paste], [Paste #N], [Paste line3], or [Paste #N line3~line7] to expand references.",
-		"After restoring a session with a saved plan, type 'continue execution' to resume it.",
-		"Approval requests appear above the input area when a shell command needs confirmation.",
-		"The footer keeps only the essential shortcuts: tab agents, / commands, drag select, Ctrl+C copy/quit, Ctrl+F history, Ctrl+L sessions.",
+		"## Slash Commands",
+		"- `/help`: show this help inside the conversation.",
+		"- `/session`: open recent sessions.",
+		"- `/skills`: list discovered skills and diagnostics.",
+		"- `/<skill-name> [k=v...]`: activate a skill for this session.",
+		"- `/skill clear`: clear the active skill in this session.",
+		"- `/skill delete <name>`: delete the specified project skill.",
+		"- `/new`: start a fresh session.",
+		"- `/compact`: summarize long history into a compact continuation context.",
+		"- `/btw <message>`: interject while a run is in progress.",
+		"- `/quit`: exit the TUI.",
+		"",
+		"## UI Notes",
+		"- `Tab` toggles between Build and Plan modes.",
+		"- Plan mode keeps the plan panel visible and focused on structured steps.",
+		"- `Ctrl+G` opens or closes the help panel.",
+		"- `Ctrl+F` searches prompt history and restores previous input.",
+		"- Drag across the conversation with the left mouse button, then press `Ctrl+C` to copy.",
+		"- If provider setup is required, paste an API key in the input and press Enter.",
+		"- Long pasted code/text is compressed to `[Paste #N ~X lines]`.",
+		"- Use `[Paste]`, `[Paste #N]`, `[Paste line3]`, or `[Paste #N line3~line7]` to expand references.",
+		"- After restoring a session with a saved plan, type `continue execution` to resume it.",
+		"- Approval requests appear above the input area when a shell command needs confirmation.",
+		"- Footer shortcuts: `tab` agents, `/` commands, drag select, `Ctrl+C` copy/quit, `Ctrl+F` history, `Ctrl+L` sessions.",
 	}, "\n")
 }
 func visibleCommandItems(group string) []commandItem {

@@ -154,6 +154,45 @@ func TestLoadMergesUserAndProjectConfigWithProjectPrecedence(t *testing.T) {
 	}
 }
 
+func TestLoadIgnoresLegacyBytemindConfigJSON(t *testing.T) {
+	workspace := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", home)
+
+	if err := writeConfig(filepath.Join(home, "config.json"), map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "user-model",
+			"api_key":  "user-key",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeConfig(filepath.Join(workspace, "bytemind.config.json"), map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "legacy-project-model",
+			"api_key":  "legacy-project-key",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider.Model != "user-model" {
+		t.Fatalf("expected legacy bytemind.config.json to be ignored, got %q", cfg.Provider.Model)
+	}
+	if cfg.Provider.ResolveAPIKey() != "user-key" {
+		t.Fatalf("expected user config api key when legacy project config exists, got %q", cfg.Provider.ResolveAPIKey())
+	}
+}
+
 func TestLoadAcceptsLegacySessionDirField(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("BYTEMIND_HOME", t.TempDir())

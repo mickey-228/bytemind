@@ -183,7 +183,6 @@ func configPathHint(workspace, explicit string) string {
 
 	candidates := []string{
 		filepath.Join(workspace, ".bytemind", "config.json"),
-		filepath.Join(workspace, "bytemind.config.json"),
 	}
 	for _, candidate := range candidates {
 		if _, err := os.Stat(candidate); err == nil {

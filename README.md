@@ -52,7 +52,7 @@ go run ./cmd/bytemind run -prompt "refactor this module" -max-iterations 64
 
 ## 配置文件
 
-项目级配置文件建议使用 `./.bytemind/config.json`（也支持 `./bytemind.config.json`）。
+项目级配置文件建议使用 `./.bytemind/config.json`。
 
 可直接从仓库根目录复制示例模板开始：
 

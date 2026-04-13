@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +17,7 @@ import (
 
 	"bytemind/internal/config"
 	"bytemind/internal/llm"
+	planpkg "bytemind/internal/plan"
 	"bytemind/internal/session"
 	"bytemind/internal/tokenusage"
 	"bytemind/internal/tools"
@@ -638,6 +641,146 @@ func TestMaybeAutoCompactSessionUsesCriticalReason(t *testing.T) {
 	}
 	if got := compactionReason(sess.Messages[0]); got != "critical" {
 		t.Fatalf("expected critical reason, got %q", got)
+	}
+}
+
+func TestRunPromptDoesNotAutoCompactMidToolLoop(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+
+	bigResult := marshalToolResult(map[string]any{
+		"ok":      true,
+		"payload": strings.Repeat("large tool output ", 600),
+	})
+	registry := tools.DefaultRegistry()
+	registry.Add(&fakeTool{
+		name: "big_tool",
+		run: func(_ json.RawMessage, _ *tools.ExecutionContext) (string, error) {
+			return bigResult, nil
+		},
+	})
+
+	firstReply := llm.Message{
+		Role: llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: llm.ToolFunctionCall{
+				Name:      "big_tool",
+				Arguments: `{}`,
+			},
+		}},
+	}
+	firstReply.Normalize()
+	userMessage := llm.NewUserTextMessage("run big tool")
+	toolResultMessage := llm.NewToolResultMessage("call-1", bigResult)
+
+	runMode := planpkg.ModeBuild
+	systemMessage := llm.NewTextMessage(llm.RoleSystem, systemPrompt(PromptInput{
+		Workspace:      workspace,
+		ApprovalPolicy: "on-request",
+		Model:          "test-model",
+		Mode:           string(runMode),
+		Skills:         nil,
+		Tools:          toolNames(registry.DefinitionsForMode(runMode)),
+		ActiveSkill:    nil,
+		Instruction:    loadAGENTSInstruction(workspace),
+	}))
+
+	step0Tokens := int(tokenusage.ApproximateRequestTokens([]llm.Message{systemMessage, userMessage}))
+	step1Tokens := int(tokenusage.ApproximateRequestTokens([]llm.Message{systemMessage, userMessage, firstReply, toolResultMessage}))
+	quota := int(math.Ceil(float64(step0Tokens)/config.DefaultContextBudgetWarningRatio)) + 1
+	if float64(step1Tokens)/float64(quota) < config.DefaultContextBudgetWarningRatio {
+		t.Skipf("unable to construct mid-loop warning case: step0=%d step1=%d quota=%d", step0Tokens, step1Tokens, quota)
+	}
+
+	client := &fakeClient{replies: []llm.Message{
+		firstReply,
+		llm.NewAssistantTextMessage("done"),
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 4,
+			Stream:        false,
+			TokenQuota:    quota,
+			ContextBudget: testContextBudget(1),
+		},
+		Client:   client,
+		Store:    store,
+		Registry: registry,
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, runErr := runner.RunPrompt(context.Background(), sess, "run big tool", "build", io.Discard)
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if answer != "done" {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+	if countCompactionRequests(client.requests) != 0 {
+		t.Fatalf("expected no compaction request during tool loop, got %d", countCompactionRequests(client.requests))
+	}
+	if countTurnRequests(client.requests) != 2 {
+		t.Fatalf("expected two turn requests, got %d", countTurnRequests(client.requests))
+	}
+	if len(sess.Messages) != 4 {
+		t.Fatalf("expected user/tool/tool_result/assistant without compaction, got %#v", sess.Messages)
+	}
+}
+
+func TestRunPromptShortCircuitsLocalPreflightPromptTooLong(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	sess.Messages = append(sess.Messages,
+		llm.NewUserTextMessage("history question"),
+		llm.NewAssistantTextMessage("history answer"),
+	)
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &scriptedClient{
+		sequence: []scriptedReply{
+			{reply: llm.NewAssistantTextMessage("should not be called")},
+		},
+	}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 3,
+			Stream:        false,
+			TokenQuota:    100,
+			ContextBudget: testContextBudget(1),
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	_, runErr := runner.RunPrompt(context.Background(), sess, strings.Repeat("very long prompt ", 320), "build", io.Discard)
+	if runErr == nil {
+		t.Fatal("expected local preflight prompt_too_long error")
+	}
+	if !isLocalPromptTooLongError(runErr) {
+		t.Fatalf("expected local prompt too long error, got %v", runErr)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no llm requests after local preflight failure, got %d", len(client.requests))
 	}
 }
 

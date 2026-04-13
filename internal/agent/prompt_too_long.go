@@ -23,7 +23,7 @@ func isPromptTooLongError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, errPromptTooLong) {
+	if isLocalPromptTooLongError(err) {
 		return true
 	}
 
@@ -38,4 +38,8 @@ func isPromptTooLongError(err error) bool {
 	}
 
 	return llm.IsContextTooLongMessage(err.Error())
+}
+
+func isLocalPromptTooLongError(err error) bool {
+	return errors.Is(err, errPromptTooLong)
 }

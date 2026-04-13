@@ -343,25 +343,30 @@ func (r *Runner) RunPromptWithInput(ctx context.Context, sess *session.Session, 
 		if err != nil {
 			return "", err
 		}
-		requestTokens := int(tokenusage.ApproximateRequestTokens(messages))
-		compacted, compactErr := r.maybeAutoCompactSession(ctx, sess, promptTokens, requestTokens)
-		if compactErr != nil {
-			retried, retryErr := r.retryAfterPromptTooLong(ctx, sess, out, compactErr, &reactiveRetries, maxReactiveRetries)
-			if retryErr != nil {
-				return "", retryErr
+		if step == 0 {
+			requestTokens := int(tokenusage.ApproximateRequestTokens(messages))
+			compacted, compactErr := r.maybeAutoCompactSession(ctx, sess, promptTokens, requestTokens)
+			if compactErr != nil {
+				if isLocalPromptTooLongError(compactErr) {
+					return "", compactErr
+				}
+				retried, retryErr := r.retryAfterPromptTooLong(ctx, sess, out, compactErr, &reactiveRetries, maxReactiveRetries)
+				if retryErr != nil {
+					return "", retryErr
+				}
+				if retried {
+					continue
+				}
+				return "", compactErr
 			}
-			if retried {
-				continue
-			}
-			return "", compactErr
-		}
-		if compacted {
-			if out != nil {
-				fmt.Fprintf(out, "%scontext compacted to fit context budget%s\n", ansiDim, ansiReset)
-			}
-			messages, err = buildTurnMessages()
-			if err != nil {
-				return "", err
+			if compacted {
+				if out != nil {
+					fmt.Fprintf(out, "%scontext compacted to fit context budget%s\n", ansiDim, ansiReset)
+				}
+				messages, err = buildTurnMessages()
+				if err != nil {
+					return "", err
+				}
 			}
 		}
 
@@ -620,7 +625,7 @@ func (r *Runner) Close() error {
 }
 
 func (r *Runner) retryAfterPromptTooLong(ctx context.Context, sess *session.Session, out io.Writer, sourceErr error, reactiveRetries *int, maxReactiveRetries int) (bool, error) {
-	if !isPromptTooLongError(sourceErr) || reactiveRetries == nil || *reactiveRetries >= maxReactiveRetries {
+	if isLocalPromptTooLongError(sourceErr) || !isPromptTooLongError(sourceErr) || reactiveRetries == nil || *reactiveRetries >= maxReactiveRetries {
 		return false, nil
 	}
 	_, changed, err := r.compactSession(ctx, sess, true, "reactive")

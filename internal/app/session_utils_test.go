@@ -84,7 +84,7 @@ func TestParseSessionListLimit(t *testing.T) {
 
 func TestSameWorkspaceNormalizesPaths(t *testing.T) {
 	workspace := t.TempDir()
-	if !SameWorkspace(workspace, workspace+`\\.`) {
+	if !SameWorkspace(workspace, filepath.Join(workspace, ".")) {
 		t.Fatal("expected normalized paths to match")
 	}
 }

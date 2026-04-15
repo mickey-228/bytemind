@@ -1176,6 +1176,114 @@ func TestPromptSearchPanelSupportsPageNavigation(t *testing.T) {
 	}
 }
 
+func TestCtrlFOpensPromptSearchStartsAsyncHistoryLoad(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	m := model{
+		input: input,
+	}
+
+	got, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlF})
+	opened := got.(model)
+	if !opened.promptSearchOpen {
+		t.Fatalf("expected ctrl+f to open prompt search")
+	}
+	if !opened.promptHistoryLoading {
+		t.Fatalf("expected prompt history async loading state")
+	}
+	if cmd == nil {
+		t.Fatalf("expected async prompt history load command")
+	}
+	if opened.statusNote != "Prompt history loading..." {
+		t.Fatalf("expected loading status note, got %q", opened.statusNote)
+	}
+}
+
+func TestUpdatePromptHistoryLoadedMsgSuccessUpdatesPromptSearchState(t *testing.T) {
+	m := model{
+		promptSearchOpen:     true,
+		promptSearchMode:     promptSearchModeQuick,
+		promptHistoryLoading: true,
+	}
+
+	got, _ := m.Update(promptHistoryLoadedMsg{
+		Entries: []history.PromptEntry{
+			{Prompt: "first prompt"},
+			{Prompt: "second prompt"},
+		},
+	})
+	updated := got.(model)
+	if !updated.promptHistoryLoaded || updated.promptHistoryLoading {
+		t.Fatalf("expected prompt history load state to settle, got loaded=%v loading=%v", updated.promptHistoryLoaded, updated.promptHistoryLoading)
+	}
+	if len(updated.promptHistoryEntries) != 2 || len(updated.promptSearchMatches) != 2 {
+		t.Fatalf("expected loaded entries and matches, got entries=%d matches=%d", len(updated.promptHistoryEntries), len(updated.promptSearchMatches))
+	}
+	if updated.statusNote != "Prompt history ready (2 matches)." {
+		t.Fatalf("expected ready status note, got %q", updated.statusNote)
+	}
+}
+
+func TestUpdatePromptHistoryLoadedMsgErrorSetsUnavailableStatus(t *testing.T) {
+	m := model{
+		promptSearchOpen:     true,
+		promptSearchMode:     promptSearchModePanel,
+		promptHistoryLoading: true,
+		promptHistoryEntries: []history.PromptEntry{
+			{Prompt: "old prompt"},
+		},
+	}
+
+	got, _ := m.Update(promptHistoryLoadedMsg{Err: errors.New("history read failed")})
+	updated := got.(model)
+	if !updated.promptHistoryLoaded || updated.promptHistoryLoading {
+		t.Fatalf("expected prompt history error to finish loading state, got loaded=%v loading=%v", updated.promptHistoryLoaded, updated.promptHistoryLoading)
+	}
+	if len(updated.promptHistoryEntries) != 0 || len(updated.promptSearchMatches) != 0 {
+		t.Fatalf("expected entries and matches to clear on load error, got entries=%d matches=%d", len(updated.promptHistoryEntries), len(updated.promptSearchMatches))
+	}
+	if !strings.Contains(updated.promptHistoryLoadErr, "history read failed") {
+		t.Fatalf("expected load error to be stored, got %q", updated.promptHistoryLoadErr)
+	}
+	if !strings.Contains(updated.statusNote, "Prompt history unavailable:") {
+		t.Fatalf("expected unavailable status note, got %q", updated.statusNote)
+	}
+}
+
+func TestOpenPromptSearchPanelReadyAndUnavailableStatus(t *testing.T) {
+	inputReady := textarea.New()
+	inputReady.Focus()
+	inputReady.SetValue("draft")
+	m := model{
+		input:               inputReady,
+		promptHistoryLoaded: true,
+		promptHistoryEntries: []history.PromptEntry{
+			{Prompt: "fix tui layout"},
+		},
+	}
+
+	if cmd := m.openPromptSearch(promptSearchModePanel); cmd != nil {
+		t.Fatalf("expected no load command when history already loaded")
+	}
+	if m.statusNote != "History panel ready (1 matches)." {
+		t.Fatalf("expected panel ready status note, got %q", m.statusNote)
+	}
+
+	inputUnavailable := textarea.New()
+	inputUnavailable.Focus()
+	m2 := model{
+		input:                inputUnavailable,
+		promptHistoryLoaded:  true,
+		promptHistoryLoadErr: "permission denied while reading history",
+	}
+	if cmd := m2.openPromptSearch(promptSearchModeQuick); cmd != nil {
+		t.Fatalf("expected no load command when history is already marked loaded")
+	}
+	if !strings.Contains(m2.statusNote, "Prompt history unavailable:") {
+		t.Fatalf("expected unavailable quick-search status note, got %q", m2.statusNote)
+	}
+}
+
 func TestStartupGuideSequentialFlowAdvancesAndClearsInput(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(configPath, []byte(`{

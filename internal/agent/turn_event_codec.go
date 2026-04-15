@@ -75,9 +75,8 @@ func (s *turnEventStream) Emit(event TurnEvent) error {
 	if event.TurnID == "" {
 		event.TurnID = s.turnID
 	}
-	if event.Sequence == 0 {
-		event.Sequence = s.sequence
-	}
+	// This stream owns sequencing; caller-provided sequence is ignored.
+	event.Sequence = s.sequence
 	if event.Timestamp.IsZero() {
 		event.Timestamp = now
 	}

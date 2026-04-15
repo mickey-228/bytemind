@@ -202,3 +202,32 @@ func TestRunPromptWithInputReturnsContextErrorWhenEngineStalls(t *testing.T) {
 		t.Fatalf("expected context cancellation, got %v", err)
 	}
 }
+
+func TestRunPromptWithInputPrefersBufferedTerminalEventOverCanceledContext(t *testing.T) {
+	workspace := t.TempDir()
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Engine: engineFunc(func(context.Context, TurnRequest) (<-chan TurnEvent, error) {
+			ch := make(chan TurnEvent, 2)
+			ch <- TurnEvent{Type: TurnEventStart}
+			ch <- TurnEvent{Type: TurnEventComplete, Answer: "ready"}
+			close(ch)
+			return ch, nil
+		}),
+		Stdout: io.Discard,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	sess := session.New(workspace)
+	answer, err := runner.RunPromptWithInput(ctx, sess, RunPromptInput{
+		DisplayText: "hello",
+	}, "build", io.Discard)
+	if err != nil {
+		t.Fatalf("expected buffered complete event to win, got error %v", err)
+	}
+	if answer != "ready" {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+}

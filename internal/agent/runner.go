@@ -166,22 +166,62 @@ func (r *Runner) RunPromptWithInput(ctx context.Context, sess *session.Session, 
 	}
 
 	for {
+		// Prefer already-buffered events before considering cancellation so
+		// terminal events are not lost when both paths become ready together.
 		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
 		case event, ok := <-events:
-			if !ok {
-				return "", fmt.Errorf("engine ended without terminal event")
+			answer, done, err := resolveTurnEvent(event, ok)
+			if done {
+				return answer, err
 			}
-			switch event.Type {
-			case TurnEventComplete:
-				return event.Answer, nil
-			case TurnEventError:
-				if event.Error != nil {
-					return "", event.Error
-				}
-				return "", fmt.Errorf("agent turn failed")
+			continue
+		default:
+		}
+
+		select {
+		case event, ok := <-events:
+			answer, done, err := resolveTurnEvent(event, ok)
+			if done {
+				return answer, err
 			}
+		case <-ctx.Done():
+			// After cancellation, do one non-blocking drain to consume a ready
+			// terminal event if it has already been emitted.
+			if answer, done, err := drainReadyTurnEvents(events); done {
+				return answer, err
+			}
+			return "", ctx.Err()
+		}
+	}
+}
+
+func resolveTurnEvent(event TurnEvent, ok bool) (string, bool, error) {
+	if !ok {
+		return "", true, fmt.Errorf("engine ended without terminal event")
+	}
+	switch event.Type {
+	case TurnEventComplete:
+		return event.Answer, true, nil
+	case TurnEventError:
+		if event.Error != nil {
+			return "", true, event.Error
+		}
+		return "", true, fmt.Errorf("agent turn failed")
+	default:
+		return "", false, nil
+	}
+}
+
+func drainReadyTurnEvents(events <-chan TurnEvent) (string, bool, error) {
+	for {
+		select {
+		case event, ok := <-events:
+			answer, done, err := resolveTurnEvent(event, ok)
+			if done {
+				return answer, true, err
+			}
+		default:
+			return "", false, nil
 		}
 	}
 }

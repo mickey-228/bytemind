@@ -10,7 +10,7 @@ import (
 // Engine executes one turn and emits turn-scoped events.
 //
 // Contract:
-//   - Implementations should emit exactly one terminal event (TurnEventCompleted or TurnEventFailed).
+//   - Implementations should emit exactly one terminal event (TurnEventComplete or TurnEventError).
 //   - Implementations should close the channel after the terminal event.
 type Engine interface {
 	HandleTurn(ctx context.Context, req TurnRequest) (<-chan TurnEvent, error)

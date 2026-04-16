@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	storagepkg "bytemind/internal/storage"
 )
 
 type CleanupResult struct {
@@ -18,15 +16,22 @@ func (s *Store) Delete(id string) error {
 	if id == "" {
 		return errors.New("session id is required")
 	}
-	path, err := s.findSessionPath(id)
+	source, err := s.findSessionSource(id)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return err
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	switch source.kind {
+	case sourceKindEvents:
+		if err := os.RemoveAll(source.paths.Dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	case sourceKindLegacy:
+		if err := os.Remove(source.paths.Legacy); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	return nil
 }
@@ -40,11 +45,14 @@ func (s *Store) DeleteInWorkspace(workspace, id string) error {
 	if workspace == "" {
 		return s.Delete(id)
 	}
-	path, err := s.files.SessionPath(storagepkg.WorkspaceProjectID(workspace), id)
+	paths, err := s.pathForWorkspaceSession(workspace, id)
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.RemoveAll(paths.Dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Remove(paths.Legacy); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil

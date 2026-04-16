@@ -1,6 +1,11 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"bytemind/internal/llm"
@@ -51,6 +56,15 @@ type ImageAssetMeta struct {
 
 type Store struct {
 	files *storagepkg.SessionFileStore
+
+	mu             sync.Mutex
+	sessionLocks   map[string]*sync.Mutex
+	recentEventIDs map[string]*eventIDWindow
+
+	now            func() time.Time
+	newEventID     func() string
+	snapshotEveryN int64
+	snapshotEveryT time.Duration
 }
 
 type Summary struct {
@@ -93,13 +107,29 @@ func NewStore(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{files: files}, nil
+	return &Store{
+		files:          files,
+		sessionLocks:   make(map[string]*sync.Mutex),
+		recentEventIDs: make(map[string]*eventIDWindow),
+		now: func() time.Time {
+			return time.Now().UTC()
+		},
+		newEventID: func() string {
+			var entropy [8]byte
+			if _, err := rand.Read(entropy[:]); err != nil {
+				return fmt.Sprintf("evt-%d", time.Now().UTC().UnixNano())
+			}
+			return "evt-" + hex.EncodeToString(entropy[:])
+		},
+		snapshotEveryN: defaultSnapshotEveryN,
+		snapshotEveryT: defaultSnapshotEveryT,
+	}, nil
 }
 
 func (s *Store) Load(id string) (*Session, error) {
-	path, err := s.findSessionPath(id)
-	if err != nil {
-		return nil, err
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("session id is required")
 	}
-	return loadSessionFile(s.files, path)
+	return s.load(id)
 }

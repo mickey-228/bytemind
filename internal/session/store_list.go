@@ -8,23 +8,43 @@ import (
 )
 
 func (s *Store) List(limit int) ([]Summary, []string, error) {
-	paths, err := s.sessionPaths()
+	sources, err := s.sessionSources()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	summaries := make([]Summary, 0, len(paths))
+	summaries := make([]Summary, 0, len(sources))
 	warnings := make([]string, 0)
-	for _, path := range paths {
-		sess, err := loadSessionFile(s.files, path)
+	seenIDs := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		if _, ok := seenIDs[source.paths.SessionID]; ok {
+			continue
+		}
+
+		var (
+			sess *Session
+			err  error
+			name string
+		)
+		switch source.kind {
+		case sourceKindEvents:
+			sess, _, _, err = s.replayFromEventStore(source.paths)
+			name = filepath.Base(source.paths.Dir)
+		case sourceKindLegacy:
+			sess, err = loadLegacySessionFile(s.files, source.paths.Legacy)
+			name = filepath.Base(source.paths.Legacy)
+		default:
+			continue
+		}
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("skipped corrupted session file %s: %v", filepath.Base(path), err))
+			warnings = append(warnings, fmt.Sprintf("skipped corrupted session file %s: %v", name, err))
 			continue
 		}
 		if strings.TrimSpace(sess.ID) == "" {
-			warnings = append(warnings, fmt.Sprintf("skipped corrupted session file %s: missing session id", filepath.Base(path)))
+			warnings = append(warnings, fmt.Sprintf("skipped corrupted session file %s: missing session id", name))
 			continue
 		}
+		seenIDs[sess.ID] = struct{}{}
 
 		timeline := sessionTimeline(sess)
 		metrics := CountMessageMetrics(timeline)

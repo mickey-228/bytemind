@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
@@ -15,7 +14,7 @@ func (s *Store) Save(session *Session) error {
 		return errors.New("session is nil")
 	}
 
-	now := time.Now().UTC()
+	now := s.now()
 	session.UpdatedAt = now
 	if session.CreatedAt.IsZero() {
 		session.CreatedAt = now
@@ -35,10 +34,5 @@ func (s *Store) Save(session *Session) error {
 	if len(session.Plan.Steps) > 0 {
 		session.Plan.UpdatedAt = session.UpdatedAt
 	}
-
-	target, err := s.pathForSession(session)
-	if err != nil {
-		return err
-	}
-	return writeSessionSnapshot(s.files, target, session)
+	return s.save(session)
 }

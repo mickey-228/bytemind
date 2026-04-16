@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,6 +257,52 @@ func TestFileTaskStoreAppendLogHonorsLockTimeout(t *testing.T) {
 	}
 	if !hasErrorCode(err, ErrCodeLockTimeout) {
 		t.Fatalf("expected lock timeout error code, got %v", err)
+	}
+}
+
+func TestNewDefaultTaskStoreUsesBytemindHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", home)
+
+	store, err := NewDefaultTaskStore(NewInMemoryLocker())
+	if err != nil {
+		t.Fatalf("expected NewDefaultTaskStore to succeed, got %v", err)
+	}
+	expectedRoot := filepath.Join(home, "tasks")
+	if store.root != expectedRoot {
+		t.Fatalf("expected root %q, got %q", expectedRoot, store.root)
+	}
+}
+
+func TestNewFileTaskStoreCreatesDefaultLockerWhenNil(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "tasks")
+	store, err := NewFileTaskStore(root, nil)
+	if err != nil {
+		t.Fatalf("expected NewFileTaskStore to succeed, got %v", err)
+	}
+	if store.locker == nil {
+		t.Fatal("expected default locker when locker is nil")
+	}
+}
+
+func TestCombineTaskUnlockError(t *testing.T) {
+	plain := errors.New("write failed")
+	if got := combineTaskUnlockError(plain, nil, "task-1"); !errors.Is(got, plain) {
+		t.Fatalf("expected base error unchanged when unlock is nil, got %v", got)
+	}
+
+	unlockErr := errors.New("unlock failed")
+	onlyUnlock := combineTaskUnlockError(nil, func() error { return unlockErr }, "task-1")
+	if !errors.Is(onlyUnlock, unlockErr) {
+		t.Fatalf("expected unlock-only error to wrap unlock failure, got %v", onlyUnlock)
+	}
+	if !strings.Contains(onlyUnlock.Error(), "unlock task \"task-1\" failed") {
+		t.Fatalf("expected unlock context in error, got %v", onlyUnlock)
+	}
+
+	joined := combineTaskUnlockError(plain, func() error { return unlockErr }, "task-1")
+	if !errors.Is(joined, plain) || !errors.Is(joined, unlockErr) {
+		t.Fatalf("expected joined error to include base and unlock errors, got %v", joined)
 	}
 }
 

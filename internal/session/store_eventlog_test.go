@@ -511,3 +511,64 @@ func TestStoreLoadFallsBackToLegacySnapshot(t *testing.T) {
 		t.Fatalf("expected legacy load fallback, got %#v", got.Messages)
 	}
 }
+
+func TestStoreReadEventsAndSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sess := New(t.TempDir())
+	sess.ID = "read-events-snapshot"
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	sess.Messages = append(sess.Messages, llm.NewUserTextMessage("hello"))
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := store.ReadEvents(sess.ID, 0)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected ReadEvents to return at least one event")
+	}
+
+	if err := store.Snapshot(sess.ID); err != nil {
+		t.Fatalf("Snapshot failed: %v", err)
+	}
+	paths, err := store.pathForSession(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths.Snapshot); err != nil {
+		t.Fatalf("expected snapshot to exist after Snapshot(), got %v", err)
+	}
+}
+
+func TestStoreReadEventsAndSnapshotOnLegacySource(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workspace := t.TempDir()
+	projectID := storagepkg.WorkspaceProjectID(workspace)
+	legacyPath := filepath.Join(dir, projectID, "legacy-read-events.jsonl")
+	legacy := New(workspace)
+	legacy.ID = "legacy-read-events"
+	if err := writeSessionSnapshot(store.files, legacyPath, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.ReadEvents("legacy-read-events", 0); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected ReadEvents on legacy source to return os.ErrNotExist, got %v", err)
+	}
+	if err := store.Snapshot("legacy-read-events"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected Snapshot on legacy source to return os.ErrNotExist, got %v", err)
+	}
+}

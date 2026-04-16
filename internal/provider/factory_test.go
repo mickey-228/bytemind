@@ -104,6 +104,30 @@ func TestNewClientAcceptsNormalizedTypeVariants(t *testing.T) {
 	}
 }
 
+func TestNewDomainClientWithIDUsesExplicitProviderInstanceID(t *testing.T) {
+	clientA, err := NewDomainClientWithID("provider-a", config.ProviderConfig{
+		Type:    "openai-compatible",
+		BaseURL: "https://api.openai.com/v1",
+		APIKey:  "test-key",
+		Model:   "gpt-5.4",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	clientB, err := NewDomainClientWithID("provider-b", config.ProviderConfig{
+		Type:    "openai-compatible",
+		BaseURL: "https://example.com/v1",
+		APIKey:  "test-key",
+		Model:   "gpt-4.1",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if clientA.ProviderID() != "provider-a" || clientB.ProviderID() != "provider-b" {
+		t.Fatalf("unexpected provider ids %q %q", clientA.ProviderID(), clientB.ProviderID())
+	}
+}
+
 func TestNewDomainClientPreservesAnthropicProviderID(t *testing.T) {
 	client, err := NewDomainClient(config.ProviderConfig{
 		Type:             "anthropic",
@@ -132,6 +156,23 @@ func TestNewDomainClientNormalizesOpenAIProviderIDVariants(t *testing.T) {
 	}
 	if client.ProviderID() != ProviderOpenAI {
 		t.Fatalf("expected provider id %q, got %q", ProviderOpenAI, client.ProviderID())
+	}
+}
+
+func TestLegacyRuntimeConfigWithEmptyTypeBuildsRegistry(t *testing.T) {
+	runtime := config.LegacyProviderRuntimeConfig(config.ProviderConfig{
+		Type:    "",
+		BaseURL: "https://api.openai.com/v1",
+		APIKey:  "test-key",
+		Model:   "gpt-5.4",
+	})
+	reg, err := NewRegistry(runtime)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	client, ok := reg.Get(context.Background(), "openai")
+	if !ok || client == nil {
+		t.Fatalf("expected openai client from legacy runtime config, got %#v ok=%v", client, ok)
 	}
 }
 

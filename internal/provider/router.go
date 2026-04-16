@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -80,7 +79,7 @@ func (r *registryRouter) collectCandidates(ctx context.Context) ([]routeCandidat
 		}
 		models, err := client.ListModels(ctx)
 		if err != nil {
-			warnings = append(warnings, Warning{ProviderID: providerID, Reason: fmt.Sprintf("provider_list_models_failed:%v", err)})
+			warnings = append(warnings, Warning{ProviderID: providerID, Reason: "provider_list_models_failed"})
 			continue
 		}
 		for _, model := range models {
@@ -158,8 +157,14 @@ func filterHealthyCandidates(ctx context.Context, health HealthChecker, candidat
 		return append([]routeCandidate(nil), candidates...)
 	}
 	filtered := make([]routeCandidate, 0, len(candidates))
+	checked := make(map[ProviderID]error, len(candidates))
 	for _, candidate := range candidates {
-		if err := health.Check(ctx, candidate.ProviderID); err == nil {
+		err, ok := checked[candidate.ProviderID]
+		if !ok {
+			err = health.Check(ctx, candidate.ProviderID)
+			checked[candidate.ProviderID] = err
+		}
+		if err == nil {
 			filtered = append(filtered, candidate)
 		}
 	}

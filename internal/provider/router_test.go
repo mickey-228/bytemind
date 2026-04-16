@@ -14,9 +14,13 @@ import (
 
 type stubHealthChecker struct {
 	errors map[ProviderID]error
+	calls  map[ProviderID]int
 }
 
 func (s stubHealthChecker) Check(_ context.Context, id ProviderID) error {
+	if s.calls != nil {
+		s.calls[id]++
+	}
 	if s.errors == nil {
 		return nil
 	}
@@ -217,8 +221,12 @@ func TestRouterCollectCandidatesSkipsInvalidEntries(t *testing.T) {
 	if len(candidates) != 2 {
 		t.Fatalf("unexpected candidates %#v", candidates)
 	}
-	if !strings.Contains(buf.String(), "provider=broken") || !strings.Contains(buf.String(), "provider_list_models_failed") {
-		t.Fatalf("expected warning log, got %q", buf.String())
+	logged := buf.String()
+	if !strings.Contains(logged, "provider=broken") || !strings.Contains(logged, "provider_list_models_failed") {
+		t.Fatalf("expected warning log, got %q", logged)
+	}
+	if strings.Contains(logged, "boom") {
+		t.Fatalf("expected warning log to omit raw upstream error, got %q", logged)
 	}
 }
 
@@ -237,6 +245,18 @@ func TestRouterRouteHandlesNilRegistryAndNoHealthyCandidates(t *testing.T) {
 	_, err := NewRouter(reg, stubHealthChecker{errors: map[ProviderID]error{"openai": errors.New("down")}}, RouterConfig{}).Route(context.Background(), "gpt-5.4", RouteContext{AllowFallback: true})
 	if err == nil {
 		t.Fatal("expected unavailable error")
+	}
+}
+
+func TestFilterHealthyCandidatesChecksEachProviderOnce(t *testing.T) {
+	health := stubHealthChecker{calls: map[ProviderID]int{}, errors: map[ProviderID]error{"backup": errors.New("down")}}
+	candidates := []routeCandidate{{ProviderID: "openai", ModelID: "gpt-5.4"}, {ProviderID: "openai", ModelID: "gpt-4.1"}, {ProviderID: "backup", ModelID: "gpt-5.4"}, {ProviderID: "backup", ModelID: "gpt-4.1"}}
+	filtered := filterHealthyCandidates(context.Background(), health, candidates)
+	if len(filtered) != 2 {
+		t.Fatalf("unexpected filtered candidates %#v", filtered)
+	}
+	if health.calls["openai"] != 1 || health.calls["backup"] != 1 {
+		t.Fatalf("expected one health check per provider, got %#v", health.calls)
 	}
 }
 

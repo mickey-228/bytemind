@@ -20,6 +20,10 @@ func TestMapErrorNormalizesRetryableByCode(t *testing.T) {
 	if mapped.Code != ErrCodeBadRequest || mapped.Retryable {
 		t.Fatalf("unexpected mapped error %#v", mapped)
 	}
+	mapped = mapError("openai", &Error{Code: ErrCodeUnavailable, Message: "wrapped", Retryable: true, Err: &llm.ProviderError{Status: 401, Message: "bad auth"}})
+	if mapped.Code != ErrCodeUnauthorized || mapped.Retryable || mapped.Provider != "openai" || mapped.Detail != "bad auth" {
+		t.Fatalf("expected wrapped provider error to normalize from upstream status, got %#v", mapped)
+	}
 }
 
 func TestMapErrorHandlesTimeoutSources(t *testing.T) {

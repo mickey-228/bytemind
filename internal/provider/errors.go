@@ -37,6 +37,10 @@ func mapError(providerID ProviderID, err error) *Error {
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
+	var upstream *llm.ProviderError
+	if errors.As(err, &upstream) && upstream != nil {
+		return mapLLMProviderError(providerID, upstream)
+	}
 	var providerErr *Error
 	if errors.As(err, &providerErr) && providerErr != nil {
 		providerErr.Retryable = isRetryableCode(providerErr.Code)
@@ -47,10 +51,6 @@ func mapError(providerID ProviderID, err error) *Error {
 			providerErr.Detail = providerErr.Err.Error()
 		}
 		return providerErr
-	}
-	var upstream *llm.ProviderError
-	if errors.As(err, &upstream) && upstream != nil {
-		return mapLLMProviderError(providerID, upstream)
 	}
 	if errors.Is(err, context.DeadlineExceeded) || isTimeoutError(err) {
 		return newError(ErrCodeTimeout, providerID, "provider request timed out", err, err.Error())

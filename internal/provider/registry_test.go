@@ -47,10 +47,10 @@ func TestNewRegistryFromProviderConfigSupportsLegacyMode(t *testing.T) {
 
 func TestNewRegistrySupportsMultipleProvidersWithSameType(t *testing.T) {
 	reg, err := NewRegistry(config.ProviderRuntimeConfig{
-		DefaultProvider: "openai-primary",
+		DefaultProvider: " OpenAI-Primary ",
 		Providers: map[string]config.ProviderConfig{
-			"openai-primary":   {Type: "openai-compatible", BaseURL: "https://api.openai.com/v1", APIKey: "key-1", Model: "gpt-5.4"},
-			"openai-secondary": {Type: "openai-compatible", BaseURL: "https://example.com/v1", APIKey: "key-2", Model: "gpt-4.1"},
+			" OpenAI-Primary ": {Type: "openai-compatible", BaseURL: "https://api.openai.com/v1", APIKey: "key-1", Model: "gpt-5.4"},
+			"OPENAI-SECONDARY": {Type: "openai-compatible", BaseURL: "https://example.com/v1", APIKey: "key-2", Model: "gpt-4.1"},
 		},
 	})
 	if err != nil {

@@ -16,19 +16,22 @@ type providerRegistry struct {
 
 func NewRegistry(cfg config.ProviderRuntimeConfig) (Registry, error) {
 	reg := &providerRegistry{clients: make(map[ProviderID]Client)}
+	normalizedProviders := make(map[ProviderID]config.ProviderConfig, len(cfg.Providers))
+	ids := make([]string, 0, len(cfg.Providers))
+	for id, providerCfg := range cfg.Providers {
+		normalizedID := ProviderID(strings.ToLower(strings.TrimSpace(id)))
+		normalizedProviders[normalizedID] = providerCfg
+		ids = append(ids, string(normalizedID))
+	}
 	if cfg.DefaultProvider != "" {
 		defaultProvider := ProviderID(strings.ToLower(strings.TrimSpace(cfg.DefaultProvider)))
-		if _, exists := cfg.Providers[string(defaultProvider)]; !exists {
+		if _, exists := normalizedProviders[defaultProvider]; !exists {
 			return nil, &Error{Code: ErrCodeProviderNotFound, Provider: defaultProvider, Message: string(ErrCodeProviderNotFound), Retryable: false, Err: ErrProviderNotFound}
 		}
 	}
-	ids := make([]string, 0, len(cfg.Providers))
-	for id := range cfg.Providers {
-		ids = append(ids, id)
-	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		providerCfg := cfg.Providers[id]
+		providerCfg := normalizedProviders[ProviderID(id)]
 		client, err := NewDomainClientWithID(ProviderID(id), providerCfg)
 		if err != nil {
 			return nil, err

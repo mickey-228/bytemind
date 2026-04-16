@@ -112,14 +112,29 @@ func TestWrapClientStreamMapsProviderErrors(t *testing.T) {
 			code: ErrCodeRateLimited, retryable: true, message: "provider rate limited",
 		},
 		{
+			name: "unauthorized",
+			err:  &llm.ProviderError{Code: llm.ErrorCodeUnknown, Provider: "openai", Status: 401, Retryable: true, Message: "bad auth"},
+			code: ErrCodeUnauthorized, retryable: false, message: "provider unauthorized",
+		},
+		{
 			name: "context too long",
 			err:  &llm.ProviderError{Code: llm.ErrorCodeContextTooLong, Provider: "anthropic", Status: 413, Retryable: false, Message: "prompt is too long with raw details"},
 			code: ErrCodeBadRequest, retryable: false, message: "request exceeds provider context limit",
 		},
 		{
+			name: "bad request",
+			err:  &llm.ProviderError{Code: llm.ErrorCodeUnknown, Provider: "openai", Status: 400, Retryable: true, Message: "invalid payload"},
+			code: ErrCodeBadRequest, retryable: false, message: "provider rejected request",
+		},
+		{
+			name: "gateway timeout",
+			err:  &llm.ProviderError{Code: llm.ErrorCodeUnknown, Provider: "openai", Status: 504, Retryable: false, Message: "gateway timeout"},
+			code: ErrCodeTimeout, retryable: true, message: "provider request timed out",
+		},
+		{
 			name: "fallback unavailable",
 			err:  errors.New("sensitive raw body"),
-			code: ErrCodeUnavailable, retryable: false, message: "provider request failed",
+			code: ErrCodeUnavailable, retryable: true, message: "provider unavailable",
 		},
 	}
 
@@ -193,7 +208,7 @@ func TestWrapClientCoversNilClientAndEmptyModel(t *testing.T) {
 
 func TestMapCompatErrorDefaultProviderErrorBranch(t *testing.T) {
 	mapped := mapCompatError(ProviderAnthropic, &llm.ProviderError{Code: llm.ErrorCodeUnknown, Retryable: true, Message: "hidden upstream body"})
-	if mapped.Code != ErrCodeUnavailable || !mapped.Retryable || mapped.Message != "provider unavailable" || mapped.Provider != ProviderAnthropic {
+	if mapped.Code != ErrCodeUnavailable || !mapped.Retryable || mapped.Message != "provider unavailable" || mapped.Provider != ProviderAnthropic || mapped.Detail != "hidden upstream body" {
 		t.Fatalf("unexpected mapped error %#v", mapped)
 	}
 }

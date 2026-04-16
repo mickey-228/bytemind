@@ -273,27 +273,5 @@ func emit(ctx context.Context, ch chan<- Event, evt Event) bool {
 }
 
 func mapCompatError(providerID ProviderID, err error) *Error {
-	mapped := &Error{
-		Code:      ErrCodeUnavailable,
-		Provider:  providerID,
-		Message:   "provider request failed",
-		Retryable: false,
-		Err:       err,
-	}
-	var providerErr *llm.ProviderError
-	if !errors.As(err, &providerErr) || providerErr == nil {
-		return mapped
-	}
-	mapped.Retryable = providerErr.Retryable
-	switch providerErr.Code {
-	case llm.ErrorCodeRateLimited:
-		mapped.Code = ErrCodeRateLimited
-		mapped.Message = "provider rate limited"
-	case llm.ErrorCodeContextTooLong:
-		mapped.Code = ErrCodeBadRequest
-		mapped.Message = "request exceeds provider context limit"
-	default:
-		mapped.Message = "provider unavailable"
-	}
-	return mapped
+	return mapError(providerID, err)
 }

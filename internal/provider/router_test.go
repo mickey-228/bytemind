@@ -73,7 +73,7 @@ func (s *stubRouterClient) Stream(_ context.Context, req Request) (<-chan Event,
 				ch <- Event{Type: EventError, ProviderID: s.providerID, ModelID: ModelID(req.Model), TraceID: req.TraceID, Error: providerErr}
 				return
 			}
-			ch <- Event{Type: EventError, ProviderID: s.providerID, ModelID: ModelID(req.Model), TraceID: req.TraceID, Error: &Error{Code: ErrCodeUnavailable, Provider: s.providerID, Message: result.err.Error(), Retryable: false, Err: result.err}}
+			ch <- Event{Type: EventError, ProviderID: s.providerID, ModelID: ModelID(req.Model), TraceID: req.TraceID, Error: &Error{Code: ErrCodeUnavailable, Provider: s.providerID, Message: "provider unavailable", Retryable: true, Err: result.err, Detail: result.err.Error()}}
 			return
 		}
 		message := result.message

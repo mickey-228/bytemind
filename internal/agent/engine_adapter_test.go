@@ -203,14 +203,13 @@ func TestRunPromptWithInputReturnsContextErrorWhenEngineStalls(t *testing.T) {
 	}
 }
 
-func TestRunPromptWithInputPrefersBufferedTerminalEventOverCanceledContext(t *testing.T) {
+func TestRunPromptWithInputPrefersCompletedEventWhenCtxDoneAlsoReady(t *testing.T) {
 	workspace := t.TempDir()
 	runner := NewRunner(Options{
 		Workspace: workspace,
 		Engine: engineFunc(func(context.Context, TurnRequest) (<-chan TurnEvent, error) {
-			ch := make(chan TurnEvent, 2)
-			ch <- TurnEvent{Type: TurnEventStart}
-			ch <- TurnEvent{Type: TurnEventComplete, Answer: "ready"}
+			ch := make(chan TurnEvent, 1)
+			ch <- TurnEvent{Type: TurnEventCompleted, Answer: "done"}
 			close(ch)
 			return ch, nil
 		}),
@@ -225,22 +224,9 @@ func TestRunPromptWithInputPrefersBufferedTerminalEventOverCanceledContext(t *te
 		DisplayText: "hello",
 	}, "build", io.Discard)
 	if err != nil {
-		t.Fatalf("expected buffered complete event to win, got error %v", err)
+		t.Fatalf("expected completed event to win race, got error: %v", err)
 	}
-	if answer != "ready" {
+	if answer != "done" {
 		t.Fatalf("unexpected answer: %q", answer)
-	}
-}
-
-func TestDrainReadyTurnEventsSkipsNonTerminalEvents(t *testing.T) {
-	events := make(chan TurnEvent, 1)
-	events <- TurnEvent{Type: TurnEventStart}
-
-	answer, done, err := drainReadyTurnEvents(events)
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-	if done {
-		t.Fatalf("expected non-terminal drain to continue, got done with answer %q", answer)
 	}
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +61,9 @@ func TestDefaultRuntimeGatewayRunSyncCompletes(t *testing.T) {
 	}
 	if !containsTaskStatus(states, corepkg.TaskRunning) {
 		t.Fatalf("expected running status callback, got %v", states)
+	}
+	if err := assertMonotonicTaskProgress(states); err != nil {
+		t.Fatalf("expected monotonic state progression, got states=%v err=%v", states, err)
 	}
 }
 
@@ -153,4 +157,43 @@ func containsTaskStatus(states []corepkg.TaskStatus, expected corepkg.TaskStatus
 		}
 	}
 	return false
+}
+
+func assertMonotonicTaskProgress(states []corepkg.TaskStatus) error {
+	if len(states) == 0 {
+		return fmt.Errorf("empty states")
+	}
+	previousRank := -1
+	for _, status := range states {
+		rank, ok := taskStatusRank(status)
+		if !ok {
+			return fmt.Errorf("unknown status %q", status)
+		}
+		if previousRank > rank {
+			return fmt.Errorf("status regressed from rank %d to %d", previousRank, rank)
+		}
+		previousRank = rank
+	}
+	last := states[len(states)-1]
+	if !isTerminalStatus(last) {
+		return fmt.Errorf("final status %q is not terminal", last)
+	}
+	return nil
+}
+
+func taskStatusRank(status corepkg.TaskStatus) (int, bool) {
+	switch status {
+	case corepkg.TaskPending:
+		return 0, true
+	case corepkg.TaskRunning:
+		return 1, true
+	case corepkg.TaskCompleted, corepkg.TaskFailed, corepkg.TaskKilled:
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
+func isTerminalStatus(status corepkg.TaskStatus) bool {
+	return status == corepkg.TaskCompleted || status == corepkg.TaskFailed || status == corepkg.TaskKilled
 }

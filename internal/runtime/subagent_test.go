@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -142,6 +143,104 @@ func TestInMemoryTaskManagerParentCancelPropagatesToChild(t *testing.T) {
 	}
 	if childResult.ErrorCode != ErrorCodeTaskCancelled {
 		t.Fatalf("expected child cancel error code %q, got %q", ErrorCodeTaskCancelled, childResult.ErrorCode)
+	}
+}
+
+func TestInMemorySubAgentCoordinatorQuotaContentionConverges(t *testing.T) {
+	release := make(chan struct{})
+	manager := NewInMemoryTaskManager(
+		WithTaskExecutor(func(ctx context.Context, _ Task) ([]byte, error) {
+			select {
+			case <-release:
+				return []byte("released"), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}),
+	)
+	quota := NewInMemoryQuotaManager(2, map[string]int{"shared": 2})
+	coordinator := NewInMemorySubAgentCoordinator(manager, quota)
+
+	const totalSpawns = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	type spawnResult struct {
+		id  corepkg.TaskID
+		err error
+	}
+	results := make(chan spawnResult, totalSpawns)
+
+	for i := 0; i < totalSpawns; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			id, err := coordinator.Spawn(context.Background(), TaskSpec{
+				Name: "contended-child",
+				Metadata: map[string]string{
+					"quota_key": "shared",
+				},
+			})
+			_ = index
+			results <- spawnResult{id: id, err: err}
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+
+	successIDs := make([]corepkg.TaskID, 0, 2)
+	quotaExceeded := 0
+	for result := range results {
+		if result.err == nil {
+			successIDs = append(successIDs, result.id)
+			continue
+		}
+		if !hasErrorCode(result.err, ErrorCodeQuotaExceeded) {
+			t.Fatalf("expected quota exceeded error, got %v", result.err)
+		}
+		quotaExceeded++
+	}
+
+	if len(successIDs) != 2 {
+		t.Fatalf("expected exactly 2 successful spawns under quota=2, got %d", len(successIDs))
+	}
+	if quotaExceeded != totalSpawns-len(successIDs) {
+		t.Fatalf("unexpected quota-exceeded count: got %d want %d", quotaExceeded, totalSpawns-len(successIDs))
+	}
+
+	for _, id := range successIDs {
+		waitUntilTaskStatus(t, manager, id, corepkg.TaskRunning, 2*time.Second)
+	}
+	close(release)
+
+	for _, id := range successIDs {
+		result, err := coordinator.Wait(context.Background(), id)
+		if err != nil {
+			t.Fatalf("wait task %q failed: %v", id, err)
+		}
+		if result.Status != corepkg.TaskCompleted {
+			t.Fatalf("expected completed status for %q, got %s", id, result.Status)
+		}
+	}
+
+	// Quota should be released after Wait and allow new spawn.
+	nextID, err := coordinator.Spawn(context.Background(), TaskSpec{
+		Name: "post-release-child",
+		Metadata: map[string]string{
+			"quota_key": "shared",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected spawn to recover after release, got %v", err)
+	}
+	nextResult, err := coordinator.Wait(context.Background(), nextID)
+	if err != nil {
+		t.Fatalf("expected post-release wait success, got %v", err)
+	}
+	if nextResult.Status != corepkg.TaskCompleted {
+		t.Fatalf("expected post-release completed status, got %s", nextResult.Status)
 	}
 }
 

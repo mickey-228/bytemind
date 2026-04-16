@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sort"
 	"strings"
@@ -42,7 +43,10 @@ func (r *registryRouter) Route(ctx context.Context, requestedModel ModelID, rc R
 	if len(filtered) == 0 {
 		return RouteResult{}, unavailableRouteError("no provider candidates available")
 	}
-	available := filterHealthyCandidates(ctx, r.health, filtered)
+	available, err := filterHealthyCandidates(ctx, r.health, filtered)
+	if err != nil {
+		return RouteResult{}, err
+	}
 	if len(available) == 0 {
 		return RouteResult{}, unavailableRouteError("no provider candidates available")
 	}
@@ -79,6 +83,9 @@ func (r *registryRouter) collectCandidates(ctx context.Context) ([]routeCandidat
 		}
 		models, err := client.ListModels(ctx)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil, err
+			}
 			warnings = append(warnings, Warning{ProviderID: providerID, Reason: "provider_list_models_failed"})
 			continue
 		}
@@ -152,9 +159,9 @@ func filterCandidatesByModel(candidates []routeCandidate, requested ModelID) []r
 	return filtered
 }
 
-func filterHealthyCandidates(ctx context.Context, health HealthChecker, candidates []routeCandidate) []routeCandidate {
+func filterHealthyCandidates(ctx context.Context, health HealthChecker, candidates []routeCandidate) ([]routeCandidate, error) {
 	if health == nil {
-		return append([]routeCandidate(nil), candidates...)
+		return append([]routeCandidate(nil), candidates...), nil
 	}
 	filtered := make([]routeCandidate, 0, len(candidates))
 	checked := make(map[ProviderID]error, len(candidates))
@@ -162,13 +169,16 @@ func filterHealthyCandidates(ctx context.Context, health HealthChecker, candidat
 		err, ok := checked[candidate.ProviderID]
 		if !ok {
 			err = health.Check(ctx, candidate.ProviderID)
+			if errors.Is(err, context.Canceled) {
+				return nil, err
+			}
 			checked[candidate.ProviderID] = err
 		}
 		if err == nil {
 			filtered = append(filtered, candidate)
 		}
 	}
-	return filtered
+	return filtered, nil
 }
 
 func sortRouteCandidates(candidates []routeCandidate, requested ModelID, rc RouteContext, cfg RouterConfig) []routeCandidate {

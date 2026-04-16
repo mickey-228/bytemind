@@ -251,12 +251,25 @@ func TestRouterRouteHandlesNilRegistryAndNoHealthyCandidates(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unavailable error")
 	}
+	reg = stubRegistry{ids: []ProviderID{"openai"}, clients: map[ProviderID]Client{"openai": &stubRouterClient{providerID: "openai", modelsErr: context.Canceled}}}
+	_, err = NewRouter(reg, nil, RouterConfig{}).Route(context.Background(), "gpt-5.4", RouteContext{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected list models cancellation to propagate, got %v", err)
+	}
+	reg = stubRegistry{ids: []ProviderID{"openai"}, clients: map[ProviderID]Client{"openai": &stubRouterClient{providerID: "openai", models: []ModelInfo{{ModelID: "gpt-5.4"}}}}}
+	_, err = NewRouter(reg, stubHealthChecker{errors: map[ProviderID]error{"openai": context.Canceled}}, RouterConfig{}).Route(context.Background(), "gpt-5.4", RouteContext{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected health check cancellation to propagate, got %v", err)
+	}
 }
 
 func TestFilterHealthyCandidatesChecksEachProviderOnce(t *testing.T) {
 	health := stubHealthChecker{calls: map[ProviderID]int{}, errors: map[ProviderID]error{"backup": errors.New("down")}}
 	candidates := []routeCandidate{{ProviderID: "openai", ModelID: "gpt-5.4"}, {ProviderID: "openai", ModelID: "gpt-4.1"}, {ProviderID: "backup", ModelID: "gpt-5.4"}, {ProviderID: "backup", ModelID: "gpt-4.1"}}
-	filtered := filterHealthyCandidates(context.Background(), health, candidates)
+	filtered, err := filterHealthyCandidates(context.Background(), health, candidates)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
 	if len(filtered) != 2 {
 		t.Fatalf("unexpected filtered candidates %#v", filtered)
 	}
@@ -279,8 +292,8 @@ func TestRouteHelpersAndPolicyBranches(t *testing.T) {
 	if got := filterCandidatesByModel([]routeCandidate{{ProviderID: "a", ModelID: "m1"}, {ProviderID: "b", ModelID: "m2"}}, ""); len(got) != 2 {
 		t.Fatalf("unexpected candidates %#v", got)
 	}
-	if got := filterHealthyCandidates(context.Background(), nil, []routeCandidate{{ProviderID: "a"}}); len(got) != 1 {
-		t.Fatalf("unexpected healthy candidates %#v", got)
+	if got, err := filterHealthyCandidates(context.Background(), nil, []routeCandidate{{ProviderID: "a"}}); err != nil || len(got) != 1 {
+		t.Fatalf("unexpected healthy candidates %#v err=%v", got, err)
 	}
 	ordered := sortRouteCandidates([]routeCandidate{{ProviderID: "anthropic", ModelID: "claude-3"}, {ProviderID: "openai", ModelID: "gpt-5.4"}, {ProviderID: "zeta", ModelID: "z1"}}, "gpt-5.4", RouteContext{PreferLatency: true}, RouterConfig{})
 	if ordered[0].ProviderID != "openai" {

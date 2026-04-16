@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"io"
+	"log"
 	"path/filepath"
 	"strings"
 
@@ -101,10 +102,22 @@ func Bootstrap(req BootstrapRequest) (Runtime, error) {
 		promptStore = storagepkg.NopPromptHistoryStore{}
 	}
 
-	var taskEventStore runtimepkg.TaskEventStore
-	taskEventStore, err = storagepkg.NewDefaultRuntimeTaskStore()
-	if err != nil {
-		taskEventStore = runtimepkg.NopTaskEventStore{}
+	taskEventStore := runtimepkg.TaskEventStore(runtimepkg.NopTaskEventStore{})
+	taskStore, taskStoreErr := storagepkg.NewDefaultTaskStoreWithOptions(nil, storagepkg.TaskStoreOptions{
+		SyncOnAppend: false,
+	})
+	if taskStoreErr == nil {
+		taskEventStore = storagepkg.NewRuntimeTaskEventAdapter(taskStore)
+	} else {
+		log.Printf("bootstrap: failed to initialize unified task store: %v", taskStoreErr)
+		legacyTaskStore, legacyErr := storagepkg.NewDefaultRuntimeTaskStore()
+		if legacyErr == nil {
+			log.Printf("bootstrap: falling back to legacy runtime task store")
+			taskEventStore = legacyTaskStore
+		} else {
+			log.Printf("bootstrap: failed to initialize legacy runtime task store: %v", legacyErr)
+			log.Printf("bootstrap: runtime task events disabled; using NopTaskEventStore")
+		}
 	}
 
 	taskManager := runtimepkg.NewInMemoryTaskManager(

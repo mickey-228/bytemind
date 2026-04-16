@@ -15,14 +15,19 @@ type clientAdapter struct {
 }
 
 type RoutedClient struct {
-	router Router
+	router        Router
+	allowFallback bool
 }
 
 func NewRoutedClient(router Router) llm.Client {
+	return NewRoutedClientWithPolicy(router, false)
+}
+
+func NewRoutedClientWithPolicy(router Router, allowFallback bool) llm.Client {
 	if router == nil {
 		return nil
 	}
-	return &RoutedClient{router: router}
+	return &RoutedClient{router: router, allowFallback: allowFallback}
 }
 
 func WrapClient(providerID ProviderID, defaultModel ModelID, client llm.Client) Client {
@@ -52,7 +57,7 @@ func (c *RoutedClient) execute(ctx context.Context, req llm.ChatRequest, stream 
 	if c == nil || c.router == nil {
 		return llm.Message{}, unavailableRouteError("no provider candidates available")
 	}
-	result, err := c.router.Route(ctx, ModelID(strings.TrimSpace(req.Model)), RouteContext{AllowFallback: true})
+	result, err := c.router.Route(ctx, ModelID(strings.TrimSpace(req.Model)), RouteContext{AllowFallback: c.allowFallback})
 	if err != nil {
 		return llm.Message{}, err
 	}
@@ -100,9 +105,15 @@ func executeTarget(ctx context.Context, target RouteTarget, req Request, stream 
 		return llm.Message{}, err
 	}
 	var result llm.Message
+	hasTerminal := false
+	hasDelta := false
 	for event := range streamCh {
 		switch event.Type {
 		case EventDelta:
+			if event.Delta != "" {
+				result.Content += event.Delta
+				hasDelta = true
+			}
 			if stream && onDelta != nil && event.Delta != "" {
 				onDelta(event.Delta)
 			}
@@ -115,14 +126,24 @@ func executeTarget(ctx context.Context, target RouteTarget, req Request, stream 
 				result.Usage = &llm.Usage{InputTokens: int(event.Usage.InputTokens), OutputTokens: int(event.Usage.OutputTokens), TotalTokens: int(event.Usage.TotalTokens)}
 			}
 		case EventResult:
+			hasTerminal = true
 			if event.Result != nil {
 				return *event.Result, nil
 			}
+			result.Normalize()
+			return result, nil
 		case EventError:
+			hasTerminal = true
 			if event.Error != nil {
 				return llm.Message{}, event.Error
 			}
 		}
+	}
+	if !hasTerminal {
+		if hasDelta || len(result.ToolCalls) > 0 || result.Usage != nil {
+			return llm.Message{}, unavailableRouteError("provider stream terminated without terminal event")
+		}
+		return llm.Message{}, unavailableRouteError("provider stream terminated unexpectedly")
 	}
 	result.Normalize()
 	return result, nil

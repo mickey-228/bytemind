@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -12,9 +13,10 @@ type RouterConfig struct {
 }
 
 type registryRouter struct {
-	registry Registry
-	health   HealthChecker
-	policy   RouterConfig
+	registry          Registry
+	health            HealthChecker
+	policy            RouterConfig
+	candidateWarnings []Warning
 }
 
 func NewRouter(reg Registry, health HealthChecker, cfg RouterConfig) Router {
@@ -65,6 +67,7 @@ func (r *registryRouter) collectCandidates(ctx context.Context) ([]routeCandidat
 		return nil, err
 	}
 	candidates := make([]routeCandidate, 0, len(ids))
+	warnings := make([]Warning, 0)
 	seen := make(map[string]struct{})
 	for _, id := range ids {
 		client, ok := r.registry.Get(ctx, id)
@@ -77,6 +80,7 @@ func (r *registryRouter) collectCandidates(ctx context.Context) ([]routeCandidat
 		}
 		models, err := client.ListModels(ctx)
 		if err != nil {
+			warnings = append(warnings, Warning{ProviderID: providerID, Reason: fmt.Sprintf("provider_list_models_failed:%v", err)})
 			continue
 		}
 		for _, model := range models {
@@ -96,7 +100,17 @@ func (r *registryRouter) collectCandidates(ctx context.Context) ([]routeCandidat
 			})
 		}
 	}
+	r.candidateWarnings = warnings
 	return candidates, nil
+}
+
+func (r *registryRouter) CandidateWarnings() []Warning {
+	if r == nil || len(r.candidateWarnings) == 0 {
+		return nil
+	}
+	warnings := make([]Warning, len(r.candidateWarnings))
+	copy(warnings, r.candidateWarnings)
+	return warnings
 }
 
 func normalizeRouteProviderID(id ProviderID) ProviderID {

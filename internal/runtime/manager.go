@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corepkg "bytemind/internal/core"
@@ -119,6 +120,7 @@ type InMemoryTaskManager struct {
 	runCancels     map[corepkg.TaskID]context.CancelFunc
 	parentChildren map[corepkg.TaskID]map[corepkg.TaskID]struct{}
 	childParent    map[corepkg.TaskID]corepkg.TaskID
+	idSeq          atomic.Uint64
 	executor       TaskExecutorFunc
 }
 
@@ -142,7 +144,7 @@ func (m *InMemoryTaskManager) Submit(ctx context.Context, spec TaskSpec) (corepk
 	if m == nil {
 		return "", ErrTaskNotImplemented
 	}
-	id := newTaskID(time.Now().UTC())
+	id := newTaskID(time.Now().UTC(), m.idSeq.Add(1))
 	now := time.Now().UTC()
 	task := Task{
 		ID:        id,
@@ -524,8 +526,8 @@ func (m *InMemoryTaskManager) removeWaiter(id corepkg.TaskID, waiter chan TaskRe
 	m.waiters[id] = filtered
 }
 
-func newTaskID(ts time.Time) corepkg.TaskID {
-	return corepkg.TaskID(ts.Format("20060102150405.000000000"))
+func newTaskID(ts time.Time, seq uint64) corepkg.TaskID {
+	return corepkg.TaskID(fmt.Sprintf("%s-%06d", ts.Format("20060102150405.000000000"), seq))
 }
 
 func taskToResult(task Task) TaskResult {

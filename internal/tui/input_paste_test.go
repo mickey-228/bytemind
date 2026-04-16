@@ -126,7 +126,7 @@ func TestApplyLongPastedTextPipelineCompressesEarlyAndMergesFollowupPasteChunk(t
 	}
 }
 
-func TestApplyLongPastedTextPipelineCompressesBurstTypedPasteFallback(t *testing.T) {
+func TestApplyLongPastedTextPipelineDoesNotCompressManualLongTyping(t *testing.T) {
 	m := newImagePipelineModel(t)
 	longPaste := strings.Join([]string{
 		"func demo() {",
@@ -149,12 +149,15 @@ func TestApplyLongPastedTextPipelineCompressesBurstTypedPasteFallback(t *testing
 		m.input.SetValue(after)
 		m.handleInputMutation(before, after, "rune")
 		before = m.input.Value()
-		if strings.HasPrefix(before, "[Paste #") {
-			break
-		}
 	}
-	if !strings.HasPrefix(m.input.Value(), "[Paste #") {
-		t.Fatalf("expected burst fallback compression, got %q", m.input.Value())
+	if got := m.input.Value(); got != longPaste {
+		t.Fatalf("expected manual typing to remain literal text, got %q", got)
+	}
+	if len(m.pastedContents) != 0 {
+		t.Fatalf("expected manual typing not to store pasted content, got %d", len(m.pastedContents))
+	}
+	if m.shouldCompressPastedText(m.input.Value(), "enter") {
+		t.Fatalf("expected manually typed long text not to be treated as pasted on submit")
 	}
 }
 
@@ -631,23 +634,23 @@ func TestShouldCompressPastedTextSkipsLikelyPathInput(t *testing.T) {
 	}
 }
 
-func TestShouldCompressPastedTextDetectsFastCharacterBurstWithoutPasteSignal(t *testing.T) {
+func TestShouldCompressPastedTextSkipsFastCharacterBurstWithoutPasteSignal(t *testing.T) {
 	m := newImagePipelineModel(t)
 	text := strings.Repeat("burst payload ", 10)
 	m.inputBurstSize = pasteBurstCharThreshold
 	m.lastInputAt = time.Now()
-	if !m.shouldCompressPastedText(text, "rune") {
-		t.Fatalf("expected rapid burst fallback to trigger compression")
+	if m.shouldCompressPastedText(text, "rune") {
+		t.Fatalf("expected rapid burst without paste signal to skip compression")
 	}
 }
 
-func TestShouldCompressPastedTextDetectsShortRapidBurstEarly(t *testing.T) {
+func TestShouldCompressPastedTextSkipsShortRapidBurstEarlyWithoutPasteSignal(t *testing.T) {
 	m := newImagePipelineModel(t)
 	text := strings.Repeat("x ", pasteBurstImmediateMinChars+2)
 	m.inputBurstSize = pasteBurstImmediateMinChars
 	m.lastInputAt = time.Now()
-	if !m.shouldCompressPastedText(text, "rune") {
-		t.Fatalf("expected short rapid burst to trigger early compression")
+	if m.shouldCompressPastedText(text, "rune") {
+		t.Fatalf("expected short rapid burst without paste signal to skip compression")
 	}
 }
 

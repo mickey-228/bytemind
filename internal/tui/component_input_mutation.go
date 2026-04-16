@@ -19,13 +19,26 @@ func (m *model) noteInputMutation(before, after, source string) {
 	}
 	m.lastInputAt = now
 
-	if source == "paste-enter" ||
-		source == "ctrl+v" ||
-		delta > 1 ||
-		strings.Contains(after[lenCommonPrefix(before, after):], "\n") ||
-		m.inputBurstSize >= 4 {
+	if shouldRecordPasteSignal(before, after, source) ||
+		(m.inputBurstSize >= 4 && isLikelyPathInput(strings.TrimSpace(after))) {
 		m.lastPasteAt = now
 	}
+}
+
+func shouldRecordPasteSignal(before, after, source string) bool {
+	if source == "paste-enter" || isPasteLikeSource(source) {
+		return true
+	}
+	_, inserted, _ := insertionDiff(before, after)
+	inserted = strings.ReplaceAll(inserted, ctrlVMarkerRune, "")
+	trimmed := strings.TrimSpace(inserted)
+	if trimmed == "" {
+		return false
+	}
+	if strings.Contains(inserted, "\n") {
+		return true
+	}
+	return len(inserted) > 1 && len(trimmed) >= pasteBurstImmediateMinChars
 }
 
 func (m *model) handleInputMutation(before, after, source string) {

@@ -213,13 +213,18 @@ func (m *model) shouldCompressPastedText(input, source string) bool {
 	if isLikelyPathInput(trimmed) || len(extractImagePathsFromChunk(input, m.workspace)) > 0 || len(extractInlineImagePathSpans(input)) > 0 {
 		return false
 	}
+	pasteContext := m.hasPasteCompressionContext(source)
+	if !pasteContext && !isSplitPasteContinuation(input, source, m.lastPasteAt) {
+		return false
+	}
 	if m.isLongPastedText(input) {
 		return true
 	}
 	if trimmed == "" {
 		return false
 	}
-	rapidBurst := !m.lastInputAt.IsZero() &&
+	rapidBurst := pasteContext &&
+		!m.lastInputAt.IsZero() &&
 		time.Since(m.lastInputAt) <= pasteBurstWindow &&
 		m.inputBurstSize >= pasteBurstImmediateMinChars
 	if rapidBurst && len(trimmed) >= pasteBurstImmediateMinChars && looksLikePastedFragment(trimmed) {
@@ -237,10 +242,21 @@ func (m *model) shouldCompressPastedText(input, source string) bool {
 	if isSplitPasteContinuation(input, source, m.lastPasteAt) {
 		return true
 	}
-	if !m.lastInputAt.IsZero() && time.Since(m.lastInputAt) <= pasteBurstWindow && m.inputBurstSize >= pasteBurstCharThreshold {
+	if pasteContext && !m.lastInputAt.IsZero() && time.Since(m.lastInputAt) <= pasteBurstWindow && m.inputBurstSize >= pasteBurstCharThreshold {
 		return true
 	}
-	return m.inputBurstSize >= pasteBurstCharThreshold
+	return pasteContext && m.inputBurstSize >= pasteBurstCharThreshold
+}
+
+func (m *model) hasPasteCompressionContext(source string) bool {
+	if m == nil {
+		return false
+	}
+	source = strings.TrimSpace(strings.ToLower(source))
+	if source == "paste-enter" || isPasteLikeSource(source) {
+		return true
+	}
+	return !m.lastPasteAt.IsZero() && time.Since(m.lastPasteAt) <= pasteContinuationWindow
 }
 
 func looksLikePastedFragment(value string) bool {
@@ -390,7 +406,7 @@ func (m *model) applyLongPastedTextPipeline(before, after, source string) (strin
 						return merged, ""
 					}
 				}
-				if safeTail && m.isLongPastedText(tail) {
+				if safeTail && m.shouldCompressPastedText(tail, source) {
 					marker, content, err := m.compressPastedText(tail)
 					if err != nil {
 						return after, err.Error()
@@ -427,7 +443,7 @@ func (m *model) applyLongPastedTextPipeline(before, after, source string) (strin
 	if strings.Contains(after, "[Paste #") || strings.Contains(after, "[Pasted #") {
 		return after, ""
 	}
-	if !m.isLongPastedText(after) {
+	if !m.shouldCompressPastedText(after, source) {
 		return after, ""
 	}
 	marker, content, err := m.compressPastedText(after)

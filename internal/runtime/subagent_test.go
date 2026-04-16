@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -245,13 +244,13 @@ func TestInMemorySubAgentCoordinatorQuotaContentionConverges(t *testing.T) {
 	}
 }
 
-func TestInMemorySubAgentCoordinatorWaitContextTimeoutDoesNotPrematurelyReleaseQuota(t *testing.T) {
-	blocker := make(chan struct{})
+func TestInMemorySubAgentCoordinatorWaitCancellationDoesNotReleaseQuotaEarly(t *testing.T) {
+	release := make(chan struct{})
 	manager := NewInMemoryTaskManager(
 		WithTaskExecutor(func(ctx context.Context, _ Task) ([]byte, error) {
 			select {
-			case <-blocker:
-				return []byte("done"), nil
+			case <-release:
+				return []byte("released"), nil
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
@@ -260,22 +259,22 @@ func TestInMemorySubAgentCoordinatorWaitContextTimeoutDoesNotPrematurelyReleaseQ
 	quota := NewInMemoryQuotaManager(1, map[string]int{"shared": 1})
 	coordinator := NewInMemorySubAgentCoordinator(manager, quota)
 
-	firstID, err := coordinator.Spawn(context.Background(), TaskSpec{
+	taskID, err := coordinator.Spawn(context.Background(), TaskSpec{
 		Name: "first",
 		Metadata: map[string]string{
 			"quota_key": "shared",
 		},
 	})
 	if err != nil {
-		t.Fatalf("first Spawn failed: %v", err)
+		t.Fatalf("spawn first failed: %v", err)
 	}
-	waitUntilTaskStatus(t, manager, firstID, corepkg.TaskRunning, 2*time.Second)
+	waitUntilTaskStatus(t, manager, taskID, corepkg.TaskRunning, 2*time.Second)
 
-	waitCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	_, err = coordinator.Wait(waitCtx, firstID)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected wait timeout, got %v", err)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer waitCancel()
+	_, err = coordinator.Wait(waitCtx, taskID)
+	if err == nil {
+		t.Fatal("expected wait timeout for running task")
 	}
 
 	_, err = coordinator.Spawn(context.Background(), TaskSpec{
@@ -285,29 +284,68 @@ func TestInMemorySubAgentCoordinatorWaitContextTimeoutDoesNotPrematurelyReleaseQ
 		},
 	})
 	if err == nil {
-		t.Fatal("expected quota exceeded while first task is still running")
+		t.Fatal("expected quota to remain occupied until first task reaches terminal state")
 	}
 	if !hasErrorCode(err, ErrorCodeQuotaExceeded) {
-		t.Fatalf("expected error code %q, got %q", ErrorCodeQuotaExceeded, errorCode(err))
+		t.Fatalf("expected quota exceeded error, got %v", err)
 	}
 
-	close(blocker)
-	if _, err := coordinator.Wait(context.Background(), firstID); err != nil {
-		t.Fatalf("Wait first task after release failed: %v", err)
+	close(release)
+	if _, err := manager.Wait(context.Background(), taskID); err != nil {
+		t.Fatalf("wait first task completion failed: %v", err)
 	}
 
-	thirdID, err := coordinator.Spawn(context.Background(), TaskSpec{
-		Name: "third",
+	waitUntilCondition(t, 2*time.Second, func() bool {
+		_, spawnErr := coordinator.Spawn(context.Background(), TaskSpec{
+			Name: "post-terminal",
+			Metadata: map[string]string{
+				"quota_key": "shared",
+			},
+		})
+		if spawnErr == nil {
+			return true
+		}
+		return false
+	})
+}
+
+func TestInMemorySubAgentCoordinatorReleasesQuotaWithoutCallerWait(t *testing.T) {
+	manager := NewInMemoryTaskManager(
+		WithTaskExecutor(func(_ context.Context, _ Task) ([]byte, error) {
+			time.Sleep(20 * time.Millisecond)
+			return []byte("done"), nil
+		}),
+	)
+	quota := NewInMemoryQuotaManager(1, map[string]int{"shared": 1})
+	coordinator := NewInMemorySubAgentCoordinator(manager, quota)
+
+	taskID, err := coordinator.Spawn(context.Background(), TaskSpec{
+		Name: "first-no-wait",
 		Metadata: map[string]string{
 			"quota_key": "shared",
 		},
 	})
 	if err != nil {
-		t.Fatalf("third Spawn failed after first task completion: %v", err)
+		t.Fatalf("spawn first failed: %v", err)
 	}
-	if _, err := coordinator.Wait(context.Background(), thirdID); err != nil {
-		t.Fatalf("Wait third task failed: %v", err)
-	}
+
+	waitUntilTaskStatus(t, manager, taskID, corepkg.TaskCompleted, 2*time.Second)
+
+	waitUntilCondition(t, 2*time.Second, func() bool {
+		nextID, spawnErr := coordinator.Spawn(context.Background(), TaskSpec{
+			Name: "second-after-auto-release",
+			Metadata: map[string]string{
+				"quota_key": "shared",
+			},
+		})
+		if spawnErr != nil {
+			return false
+		}
+		if _, waitErr := coordinator.Wait(context.Background(), nextID); waitErr != nil {
+			t.Fatalf("wait second task failed: %v", waitErr)
+		}
+		return true
+	})
 }
 
 func waitUntilTaskStatus(t *testing.T, manager *InMemoryTaskManager, id corepkg.TaskID, expected corepkg.TaskStatus, timeout time.Duration) {
@@ -323,6 +361,20 @@ func waitUntilTaskStatus(t *testing.T, manager *InMemoryTaskManager, id corepkg.
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("task %q did not reach status %s (current=%s)", id, expected, task.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitUntilCondition(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if condition() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("condition was not satisfied before timeout")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

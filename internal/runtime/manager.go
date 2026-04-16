@@ -113,18 +113,22 @@ func WithTaskExecutor(executor TaskExecutorFunc) InMemoryTaskManagerOption {
 
 // InMemoryTaskManager is a safe placeholder until runtime orchestration is wired.
 type InMemoryTaskManager struct {
-	mu         sync.RWMutex
-	tasks      map[corepkg.TaskID]Task
-	waiters    map[corepkg.TaskID][]chan TaskResult
-	runCancels map[corepkg.TaskID]context.CancelFunc
-	executor   TaskExecutorFunc
+	mu             sync.RWMutex
+	tasks          map[corepkg.TaskID]Task
+	waiters        map[corepkg.TaskID][]chan TaskResult
+	runCancels     map[corepkg.TaskID]context.CancelFunc
+	parentChildren map[corepkg.TaskID]map[corepkg.TaskID]struct{}
+	childParent    map[corepkg.TaskID]corepkg.TaskID
+	executor       TaskExecutorFunc
 }
 
 func NewInMemoryTaskManager(opts ...InMemoryTaskManagerOption) *InMemoryTaskManager {
 	manager := &InMemoryTaskManager{
-		tasks:      make(map[corepkg.TaskID]Task),
-		waiters:    make(map[corepkg.TaskID][]chan TaskResult),
-		runCancels: make(map[corepkg.TaskID]context.CancelFunc),
+		tasks:          make(map[corepkg.TaskID]Task),
+		waiters:        make(map[corepkg.TaskID][]chan TaskResult),
+		runCancels:     make(map[corepkg.TaskID]context.CancelFunc),
+		parentChildren: make(map[corepkg.TaskID]map[corepkg.TaskID]struct{}),
+		childParent:    make(map[corepkg.TaskID]corepkg.TaskID),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -149,6 +153,7 @@ func (m *InMemoryTaskManager) Submit(ctx context.Context, spec TaskSpec) (corepk
 	}
 	m.mu.Lock()
 	m.tasks[id] = task
+	m.registerParentChildLocked(id, task.Spec.ParentTaskID)
 	m.mu.Unlock()
 
 	m.enqueueTask(detachContext(ctx), id)
@@ -179,9 +184,10 @@ func (m *InMemoryTaskManager) Cancel(ctx context.Context, id corepkg.TaskID, _ s
 
 	now := time.Now().UTC()
 	var (
-		result  TaskResult
-		waiters []chan TaskResult
-		hasTask bool
+		result   TaskResult
+		waiters  []chan TaskResult
+		hasTask  bool
+		childIDs []corepkg.TaskID
 	)
 
 	m.mu.Lock()
@@ -190,11 +196,15 @@ func (m *InMemoryTaskManager) Cancel(ctx context.Context, id corepkg.TaskID, _ s
 		m.mu.Unlock()
 		return taskNotFoundError(id)
 	}
+	childIDs = m.snapshotChildIDsLocked(id)
 	if task.Status == corepkg.TaskRunning {
 		cancel := m.runCancels[id]
 		m.mu.Unlock()
 		if cancel != nil {
 			cancel()
+		}
+		if err := m.cancelChildTasks(ctx, childIDs, "parent_cancelled"); err != nil {
+			return err
 		}
 		_, waitErr := m.Wait(ctx, id)
 		if waitErr != nil {
@@ -204,6 +214,9 @@ func (m *InMemoryTaskManager) Cancel(ctx context.Context, id corepkg.TaskID, _ s
 	}
 	if task.Status == corepkg.TaskKilled {
 		m.mu.Unlock()
+		if err := m.cancelChildTasks(ctx, childIDs, "parent_cancelled"); err != nil {
+			return err
+		}
 		return nil
 	}
 	if err := ValidateTaskTransition(task.Status, corepkg.TaskKilled, TransitionOptions{}); err != nil {
@@ -216,11 +229,16 @@ func (m *InMemoryTaskManager) Cancel(ctx context.Context, id corepkg.TaskID, _ s
 	task.FinishedAt = &now
 	m.tasks[id] = task
 	delete(m.runCancels, id)
+	m.detachParentChildLinkLocked(id)
 	result = taskToResult(task)
 	waiters = m.waiters[id]
 	delete(m.waiters, id)
 	hasTask = true
 	m.mu.Unlock()
+
+	if err := m.cancelChildTasks(ctx, childIDs, "parent_cancelled"); err != nil {
+		return err
+	}
 
 	if hasTask {
 		for _, waiter := range waiters {
@@ -397,6 +415,7 @@ func (m *InMemoryTaskManager) runTaskAttempt(parentCtx context.Context, id corep
 	current.FinishedAt = &finished
 	m.tasks[id] = current
 	delete(m.runCancels, id)
+	m.detachParentChildLinkLocked(id)
 
 	result = taskToResult(current)
 	waiters = m.waiters[id]
@@ -426,6 +445,62 @@ func mapExecutionResult(execErr error) (corepkg.TaskStatus, string) {
 		return corepkg.TaskFailed, code
 	}
 	return corepkg.TaskFailed, ErrorCodeTaskExecutionFailed
+}
+
+func (m *InMemoryTaskManager) registerParentChildLocked(childID, parentID corepkg.TaskID) {
+	if parentID == "" {
+		return
+	}
+	if m.parentChildren[parentID] == nil {
+		m.parentChildren[parentID] = make(map[corepkg.TaskID]struct{})
+	}
+	m.parentChildren[parentID][childID] = struct{}{}
+	m.childParent[childID] = parentID
+}
+
+func (m *InMemoryTaskManager) detachParentChildLinkLocked(taskID corepkg.TaskID) {
+	parentID, hasParent := m.childParent[taskID]
+	if hasParent {
+		delete(m.childParent, taskID)
+		children := m.parentChildren[parentID]
+		delete(children, taskID)
+		if len(children) == 0 {
+			delete(m.parentChildren, parentID)
+		}
+	}
+	if children, ok := m.parentChildren[taskID]; ok {
+		delete(m.parentChildren, taskID)
+		for childID := range children {
+			delete(m.childParent, childID)
+		}
+	}
+}
+
+func (m *InMemoryTaskManager) snapshotChildIDsLocked(parentID corepkg.TaskID) []corepkg.TaskID {
+	children := m.parentChildren[parentID]
+	if len(children) == 0 {
+		return nil
+	}
+	ids := make([]corepkg.TaskID, 0, len(children))
+	for childID := range children {
+		ids = append(ids, childID)
+	}
+	return ids
+}
+
+func (m *InMemoryTaskManager) cancelChildTasks(ctx context.Context, childIDs []corepkg.TaskID, reason string) error {
+	for _, childID := range childIDs {
+		err := m.Cancel(ctx, childID, reason)
+		if err == nil {
+			continue
+		}
+		code := errorCode(err)
+		if code == ErrorCodeTaskNotFound || code == ErrorCodeInvalidTransition {
+			continue
+		}
+		return err
+	}
+	return nil
 }
 
 func (m *InMemoryTaskManager) removeWaiter(id corepkg.TaskID, waiter chan TaskResult) {

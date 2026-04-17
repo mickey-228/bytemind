@@ -465,6 +465,51 @@ func TestNewRoutedClientAndExecuteBranches(t *testing.T) {
 	}
 }
 
+func TestRoutedClientHealthRecordsSuccessFailureAndFallback(t *testing.T) {
+	health := stubHealthChecker{successes: map[ProviderID]int{}, failures: map[ProviderID]int{}}
+	primary := &stubRouterClient{providerID: "openai", models: []ModelInfo{{ProviderID: "openai", ModelID: "gpt-5.4"}}, streams: []stubRouterStreamResult{{err: &Error{Code: ErrCodeRateLimited, Provider: "openai", Message: "rate limited", Retryable: true}}}}
+	fallback := &stubRouterClient{providerID: "backup", models: []ModelInfo{{ProviderID: "backup", ModelID: "gpt-5.4"}}, streams: []stubRouterStreamResult{{message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}}}}
+	reg, _ := NewRegistry(config.ProviderRuntimeConfig{})
+	_ = reg.Register(context.Background(), primary)
+	_ = reg.Register(context.Background(), fallback)
+	client := NewRoutedClientWithPolicy(NewRouter(reg, nil, RouterConfig{DefaultProvider: "openai"}), health, true).(*RoutedClient)
+	msg, err := client.CreateMessage(context.Background(), llm.ChatRequest{Model: "gpt-5.4"})
+	if err != nil || msg.Content != "ok" {
+		t.Fatalf("expected fallback success, got msg=%#v err=%v", msg, err)
+	}
+	if health.failures["openai"] != 1 || health.successes["backup"] != 1 {
+		t.Fatalf("unexpected health counts failures=%#v successes=%#v", health.failures, health.successes)
+	}
+	if health.successes["openai"] != 0 || health.failures["backup"] != 0 {
+		t.Fatalf("unexpected cross-provider health counts failures=%#v successes=%#v", health.failures, health.successes)
+	}
+
+	health = stubHealthChecker{successes: map[ProviderID]int{}, failures: map[ProviderID]int{}}
+	solo := &stubRouterClient{providerID: "openai", models: []ModelInfo{{ProviderID: "openai", ModelID: "gpt-5.4"}}, streams: []stubRouterStreamResult{{message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}}}
+	reg, _ = NewRegistry(config.ProviderRuntimeConfig{})
+	_ = reg.Register(context.Background(), solo)
+	client = NewRoutedClientWithPolicy(NewRouter(reg, nil, RouterConfig{DefaultProvider: "openai"}), health, false).(*RoutedClient)
+	msg, err = client.CreateMessage(context.Background(), llm.ChatRequest{Model: "gpt-5.4"})
+	if err != nil || msg.Content != "done" {
+		t.Fatalf("expected primary success, got msg=%#v err=%v", msg, err)
+	}
+	if health.successes["openai"] != 1 || len(health.failures) != 0 {
+		t.Fatalf("unexpected health counts failures=%#v successes=%#v", health.failures, health.successes)
+	}
+
+	health = stubHealthChecker{successes: map[ProviderID]int{}, failures: map[ProviderID]int{}}
+	solo = &stubRouterClient{providerID: "openai", models: []ModelInfo{{ProviderID: "openai", ModelID: "gpt-5.4"}}, streams: []stubRouterStreamResult{{err: &Error{Code: ErrCodeUnavailable, Provider: "openai", Message: "down", Retryable: true}}}}
+	reg, _ = NewRegistry(config.ProviderRuntimeConfig{})
+	_ = reg.Register(context.Background(), solo)
+	client = NewRoutedClientWithPolicy(NewRouter(reg, nil, RouterConfig{DefaultProvider: "openai"}), health, false).(*RoutedClient)
+	if _, err = client.CreateMessage(context.Background(), llm.ChatRequest{Model: "gpt-5.4"}); err == nil {
+		t.Fatal("expected primary failure")
+	}
+	if health.failures["openai"] != 1 || len(health.successes) != 0 {
+		t.Fatalf("unexpected health counts failures=%#v successes=%#v", health.failures, health.successes)
+	}
+}
+
 func TestExecuteTargetCoversBranches(t *testing.T) {
 	client := &stubRouterClient{providerID: "openai", streamErr: errors.New("stream setup failed")}
 	if _, err := executeTarget(context.Background(), RouteTarget{ProviderID: "openai", ModelID: "gpt-5.4", Client: client}, Request{ChatRequest: llm.ChatRequest{Model: "gpt-5.4"}}, false, nil); err == nil {

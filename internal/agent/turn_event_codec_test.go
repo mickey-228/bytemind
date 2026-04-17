@@ -352,6 +352,18 @@ func (cancelAwareClient) StreamMessage(ctx context.Context, req llm.ChatRequest,
 	return llm.Message{}, ctx.Err()
 }
 
+type panicClient struct {
+	panicValue any
+}
+
+func (c panicClient) CreateMessage(context.Context, llm.ChatRequest) (llm.Message, error) {
+	panic(c.panicValue)
+}
+
+func (c panicClient) StreamMessage(context.Context, llm.ChatRequest, func(string)) (llm.Message, error) {
+	panic(c.panicValue)
+}
+
 func TestDefaultEngineHandleTurnEmitsToolResultWhenPolicyDenies(t *testing.T) {
 	workspace := t.TempDir()
 	store, err := session.NewStore(t.TempDir())
@@ -502,5 +514,61 @@ func TestDefaultEngineHandleTurnEmitsErrorEventOnContextCancel(t *testing.T) {
 	}
 	if terminal.ErrorCode != "run_failed" {
 		t.Fatalf("expected run_failed error code, got %q", terminal.ErrorCode)
+	}
+}
+
+func TestDefaultEngineHandleTurnEmitsErrorEventOnPanic(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Type: "openai-compatible", Model: "test-model"},
+			MaxIterations: 2,
+			Stream:        false,
+			TokenQuota:    100000,
+		},
+		Client:   panicClient{panicValue: "panic-from-client"},
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	engine := NewDefaultEngine(runner)
+	events, err := engine.HandleTurn(context.Background(), TurnRequest{
+		Session: sess,
+		Input: RunPromptInput{
+			DisplayText: "panic test",
+		},
+		Mode: "build",
+		Out:  io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("HandleTurn failed: %v", err)
+	}
+
+	got := make([]TurnEvent, 0, 4)
+	for event := range events {
+		got = append(got, event)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected start+terminal event, got %d (%#v)", len(got), got)
+	}
+	if got[0].Type != TurnEventStart || got[1].Type != TurnEventError {
+		t.Fatalf("expected start->error sequence, got %#v", got)
+	}
+	if got[1].ErrorCode != "run_panicked" {
+		t.Fatalf("expected run_panicked error code, got %q", got[1].ErrorCode)
+	}
+	if got[1].Error == nil {
+		t.Fatalf("expected panic error payload, got %#v", got[1])
+	}
+	if !strings.Contains(got[1].Error.Error(), "panic-from-client") {
+		t.Fatalf("expected panic value in error payload, got %v", got[1].Error)
 	}
 }

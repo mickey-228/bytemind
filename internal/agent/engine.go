@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	corepkg "bytemind/internal/core"
 )
@@ -38,6 +39,20 @@ func (e *defaultEngine) HandleTurn(ctx context.Context, req TurnRequest) (<-chan
 	events := stream.Events()
 
 	go func() {
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+			if err := stream.Emit(TurnEvent{
+				Type:      TurnEventError,
+				Error:     formatTurnPanicError(recovered),
+				ErrorCode: "run_panicked",
+			}); err != nil {
+				stream.CloseWithoutTerminal()
+			}
+		}()
+
 		runCtx := withTurnEventSink(ctx, stream)
 
 		if err := stream.Emit(TurnEvent{Type: TurnEventStart}); err != nil {
@@ -81,4 +96,13 @@ func (e *defaultEngine) HandleTurn(ctx context.Context, req TurnRequest) (<-chan
 	}()
 
 	return events, nil
+}
+
+func formatTurnPanicError(recovered any) error {
+	switch v := recovered.(type) {
+	case error:
+		return fmt.Errorf("panic recovered in turn execution: %w", v)
+	default:
+		return fmt.Errorf("panic recovered in turn execution: %v", v)
+	}
 }

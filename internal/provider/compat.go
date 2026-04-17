@@ -208,18 +208,44 @@ func (a *clientAdapter) Stream(ctx context.Context, req Request) (<-chan Event, 
 		}) {
 			return
 		}
-		message, err := a.client.StreamMessage(ctx, req.ChatRequest, func(delta string) {
-			if strings.TrimSpace(delta) == "" {
-				return
+
+		deltas := make(chan string, 16)
+		deltaDone := make(chan struct{})
+		go func() {
+			defer close(deltaDone)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case delta, ok := <-deltas:
+					if !ok {
+						return
+					}
+					if strings.TrimSpace(delta) == "" {
+						continue
+					}
+					if !normalizeEvent(ctx, normalizer, stream, Event{
+						Type:       EventDelta,
+						TraceID:    req.TraceID,
+						ProviderID: a.providerID,
+						ModelID:    modelID,
+						Delta:      delta,
+					}) {
+						return
+					}
+				}
 			}
-			_ = normalizeEvent(ctx, normalizer, stream, Event{
-				Type:       EventDelta,
-				TraceID:    req.TraceID,
-				ProviderID: a.providerID,
-				ModelID:    modelID,
-				Delta:      delta,
-			})
+		}()
+
+		message, err := a.client.StreamMessage(ctx, req.ChatRequest, func(delta string) {
+			select {
+			case <-ctx.Done():
+				return
+			case deltas <- delta:
+			}
 		})
+		close(deltas)
+		<-deltaDone
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 				return

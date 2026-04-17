@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
 var eventCounter uint64
 
 type streamNormalizer struct {
+	mu         sync.Mutex
 	traceID    string
 	providerID ProviderID
 	modelID    ModelID
@@ -29,17 +31,33 @@ func normalizeEvent(ctx context.Context, n *streamNormalizer, ch chan<- Event, e
 	if n == nil {
 		n = newStreamNormalizer(evt.TraceID, evt.ProviderID, evt.ModelID)
 	}
-	normalized, err := n.normalize(evt)
-	if err != nil {
-		if n.terminated {
-			return false
-		}
-		normalized = n.errorEvent(err)
+	normalized, drop := n.normalizeOrConvert(evt)
+	if drop {
+		return false
 	}
 	return emit(ctx, ch, normalized)
 }
 
-func (n *streamNormalizer) normalize(evt Event) (Event, error) {
+func (n *streamNormalizer) normalizeOrConvert(evt Event) (Event, bool) {
+	if n == nil {
+		mapped := unavailableRouteError("provider stream normalizer unavailable")
+		return Event{Type: EventError, Error: mapped}, false
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	normalized, err := n.normalizeLocked(evt)
+	if err == nil {
+		return normalized, false
+	}
+	if n.terminated {
+		return Event{}, true
+	}
+	return n.errorEventLocked(err), false
+}
+
+func (n *streamNormalizer) normalizeLocked(evt Event) (Event, error) {
 	if n == nil {
 		return Event{}, fmt.Errorf("provider stream normalizer unavailable")
 	}
@@ -99,7 +117,7 @@ func (n *streamNormalizer) enrich(evt Event) Event {
 	return evt
 }
 
-func (n *streamNormalizer) errorEvent(err error) Event {
+func (n *streamNormalizer) errorEventLocked(err error) Event {
 	n.terminated = true
 	mapped := mapError(n.providerID, err)
 	if mapped == nil {

@@ -1,6 +1,11 @@
 package app
 
-import "io"
+import (
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+)
 
 type EntrypointRequest struct {
 	WorkspaceOverride     string
@@ -15,7 +20,18 @@ type EntrypointRequest struct {
 }
 
 func BootstrapEntrypoint(req EntrypointRequest) (Runtime, error) {
-	workspace, err := ResolveWorkspace(req.WorkspaceOverride)
+	workspaceOverride := strings.TrimSpace(req.WorkspaceOverride)
+	if workspaceOverride == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return Runtime{}, err
+		}
+		workspaceOverride, err = filepath.Abs(cwd)
+		if err != nil {
+			return Runtime{}, err
+		}
+	}
+	workspace, err := ResolveWorkspace(workspaceOverride)
 	if err != nil {
 		return Runtime{}, err
 	}

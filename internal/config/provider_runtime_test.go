@@ -1,6 +1,61 @@
 package config
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func writeProviderRuntimeConfigFile(t *testing.T, workspace string, cfg map[string]any) {
+	t.Helper()
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectConfigDir := filepath.Join(workspace, ".bytemind")
+	if err := os.MkdirAll(projectConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectConfigDir, "config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConfigLoadPreservesExplicitProviderRuntime(t *testing.T) {
+	workspace := t.TempDir()
+	writeProviderRuntimeConfigFile(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"provider_runtime": map[string]any{
+			"default_provider": "openai",
+			"default_model":    "gpt-5.4-mini",
+			"allow_fallback":   true,
+			"providers": map[string]any{
+				"openai": map[string]any{
+					"type":     "openai-compatible",
+					"base_url": "https://api.openai.com/v1",
+					"model":    "gpt-5.4-mini",
+					"api_key":  "test-key",
+				},
+			},
+		},
+	})
+	cfg, err := Load(workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProviderRuntime.DefaultProvider != "openai" || cfg.ProviderRuntime.DefaultModel != "gpt-5.4-mini" || !cfg.ProviderRuntime.AllowFallback {
+		t.Fatalf("unexpected provider runtime %#v", cfg.ProviderRuntime)
+	}
+	if len(cfg.ProviderRuntime.Providers) != 1 {
+		t.Fatalf("unexpected provider runtime providers %#v", cfg.ProviderRuntime.Providers)
+	}
+}
 
 func TestLegacyProviderRuntimeConfigNormalizesProviderIDs(t *testing.T) {
 	tests := []struct {

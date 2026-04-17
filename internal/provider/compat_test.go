@@ -9,6 +9,15 @@ import (
 	"bytemind/internal/llm"
 )
 
+type staticCompatRouter struct {
+	result RouteResult
+	err    error
+}
+
+func (r staticCompatRouter) Route(context.Context, ModelID, RouteContext) (RouteResult, error) {
+	return r.result, r.err
+}
+
 type stubCompatClient struct {
 	message llm.Message
 	err     error
@@ -297,6 +306,25 @@ func TestNormalizeEventRejectsEventsAfterTerminal(t *testing.T) {
 	}
 	if len(events) != 2 || events[0].Type != EventStart || events[1].Type != EventResult {
 		t.Fatalf("unexpected normalized events %#v", events)
+	}
+}
+
+func TestRoutedClientCreateMessageReturnsResultContent(t *testing.T) {
+	target := RouteTarget{
+		ProviderID: ProviderOpenAI,
+		ModelID:    ModelID("gpt-5.4"),
+		Client: WrapClient(ProviderOpenAI, ModelID("gpt-5.4"), stubCompatClient{message: llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: "Task complete.",
+		}}),
+	}
+	client := &RoutedClient{router: staticCompatRouter{result: RouteResult{Primary: target}}}
+	msg, err := client.CreateMessage(context.Background(), llm.ChatRequest{Model: "gpt-5.4"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if msg.Content != "Task complete." {
+		t.Fatalf("unexpected message %#v", msg)
 	}
 }
 

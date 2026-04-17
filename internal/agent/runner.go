@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"bytemind/internal/config"
 	extensionspkg "bytemind/internal/extensions"
@@ -152,6 +153,30 @@ func NewRunner(opts Options) *Runner {
 	runner.engine = engine
 
 	return runner
+}
+
+func (r *Runner) GetClient() llm.Client {
+	if r == nil {
+		return nil
+	}
+	return r.client
+}
+
+func (r *Runner) GetConfig() config.Config {
+	if r == nil {
+		return config.Config{}
+	}
+	return r.config
+}
+
+func (r *Runner) modelID() string {
+	if r == nil {
+		return ""
+	}
+	if model := strings.TrimSpace(r.config.ProviderRuntime.DefaultModel); model != "" {
+		return model
+	}
+	return strings.TrimSpace(r.config.Provider.Model)
 }
 
 func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput, mode string, out io.Writer) (string, error) {

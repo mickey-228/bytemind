@@ -11,7 +11,9 @@ import (
 	"bytemind/internal/config"
 	"bytemind/internal/llm"
 	policypkg "bytemind/internal/policy"
+	"bytemind/internal/provider"
 	runtimepkg "bytemind/internal/runtime"
+	"bytemind/internal/session"
 	"bytemind/internal/tools"
 )
 
@@ -35,7 +37,39 @@ func (c *streamFallbackClient) StreamMessage(_ context.Context, _ llm.ChatReques
 	return c.streamMsg, nil
 }
 
+func TestRunPromptWithRoutedClientReturnsAssistantContent(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &routeContextClient{}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:        config.ProviderConfig{Model: "gpt-5.4-mini"},
+			ProviderRuntime: config.ProviderRuntimeConfig{DefaultProvider: "openai", DefaultModel: "gpt-5.4-mini"},
+			MaxIterations:   4,
+			Stream:          false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+	answer, err := runner.RunPrompt(context.Background(), sess, "inspect repo", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "done" {
+		t.Fatalf("unexpected answer %q", answer)
+	}
+}
+
 func TestRunnerSetters(t *testing.T) {
+
 	runner := NewRunner(Options{})
 	if runner.observer != nil {
 		t.Fatal("expected nil observer by default")
@@ -127,6 +161,35 @@ func TestCompleteTurnFallsBackToCreateWhenStreamReplyIsEmpty(t *testing.T) {
 	}
 	if streamed {
 		t.Fatalf("expected streamed=false when no deltas emitted, got true")
+	}
+}
+
+type routeContextClient struct {
+	lastRouteContext provider.RouteContext
+}
+
+func (c *routeContextClient) CreateMessage(ctx context.Context, _ llm.ChatRequest) (llm.Message, error) {
+	c.lastRouteContext = provider.RouteContextFromContext(ctx)
+	return llm.Message{Role: "assistant", Content: "done"}, nil
+}
+
+func (c *routeContextClient) StreamMessage(ctx context.Context, req llm.ChatRequest, onDelta func(string)) (llm.Message, error) {
+	return c.CreateMessage(ctx, req)
+}
+
+func TestCompleteTurnInjectsRouteContext(t *testing.T) {
+	client := &routeContextClient{}
+	runner := NewRunner(Options{
+		Config: config.Config{Stream: false},
+		Client: client,
+	})
+	streamed := false
+	_, err := runner.completeTurn(context.Background(), llm.ChatRequest{}, io.Discard, &streamed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !client.lastRouteContext.AllowFallback {
+		t.Fatalf("expected allow fallback route context, got %#v", client.lastRouteContext)
 	}
 }
 

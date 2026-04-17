@@ -24,6 +24,13 @@ func LoadRuntimeConfig(req ConfigRequest) (config.Config, error) {
 	}
 	if req.ModelOverride != "" {
 		cfg.Provider.Model = req.ModelOverride
+		if cfg.ProviderRuntime.DefaultModel != "" {
+			cfg.ProviderRuntime.DefaultModel = req.ModelOverride
+		}
+		for id, providerCfg := range cfg.ProviderRuntime.Providers {
+			providerCfg.Model = req.ModelOverride
+			cfg.ProviderRuntime.Providers[id] = providerCfg
+		}
 	}
 	if req.StreamOverride != "" {
 		parsed, err := strconv.ParseBool(req.StreamOverride)

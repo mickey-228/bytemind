@@ -46,6 +46,9 @@ func BuildTUIRuntime(req TUIRequest) (TUIRuntime, error) {
 	if err := fs.Parse(req.Args); err != nil {
 		return TUIRuntime{}, err
 	}
+	if *maxIterations < 0 {
+		return TUIRuntime{}, errors.New("-max-iterations must be greater than 0")
+	}
 
 	workspace, err := ResolveWorkspace(*workspaceOverride)
 	if err != nil {

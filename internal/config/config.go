@@ -22,13 +22,14 @@ const (
 )
 
 type Config struct {
-	Provider       ProviderConfig      `json:"provider"`
-	ApprovalPolicy string              `json:"approval_policy"`
-	MaxIterations  int                 `json:"max_iterations"`
-	Stream         bool                `json:"stream"`
-	TokenQuota     int                 `json:"token_quota"`
-	TokenUsage     TokenUsageConfig    `json:"token_usage"`
-	ContextBudget  ContextBudgetConfig `json:"context_budget"`
+	Provider        ProviderConfig        `json:"provider"`
+	ProviderRuntime ProviderRuntimeConfig `json:"provider_runtime"`
+	ApprovalPolicy  string                `json:"approval_policy"`
+	MaxIterations   int                   `json:"max_iterations"`
+	Stream          bool                  `json:"stream"`
+	TokenQuota      int                   `json:"token_quota"`
+	TokenUsage      TokenUsageConfig      `json:"token_usage"`
+	ContextBudget   ContextBudgetConfig   `json:"context_budget"`
 }
 
 type ProviderConfig struct {
@@ -342,6 +343,52 @@ func normalize(cfg *Config) error {
 	}
 	if cfg.Provider.ExtraHeaders == nil {
 		cfg.Provider.ExtraHeaders = map[string]string{}
+	}
+	if len(cfg.ProviderRuntime.Providers) == 0 {
+		cfg.ProviderRuntime = LegacyProviderRuntimeConfig(cfg.Provider)
+	}
+	cfg.ProviderRuntime.DefaultProvider = strings.ToLower(strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider))
+	cfg.ProviderRuntime.DefaultModel = strings.TrimSpace(cfg.ProviderRuntime.DefaultModel)
+	if cfg.ProviderRuntime.DefaultModel == "" {
+		cfg.ProviderRuntime.DefaultModel = cfg.Provider.Model
+	}
+	if cfg.ProviderRuntime.Providers == nil {
+		cfg.ProviderRuntime.Providers = map[string]ProviderConfig{}
+	}
+	for id, providerCfg := range cfg.ProviderRuntime.Providers {
+		normalizedID := strings.ToLower(strings.TrimSpace(id))
+		providerCfg.Type = normalizeProviderType(providerCfg.Type)
+		if providerCfg.Type == "" {
+			if providerCfg.AutoDetectType {
+				providerCfg.Type = detectProviderType(providerCfg)
+			} else {
+				providerCfg.Type = "openai-compatible"
+			}
+		}
+		if strings.TrimSpace(providerCfg.BaseURL) == "" {
+			providerCfg.BaseURL = defaultBaseURL(providerCfg.Type)
+		}
+		if strings.TrimSpace(providerCfg.Model) == "" {
+			providerCfg.Model = cfg.ProviderRuntime.DefaultModel
+		}
+		if providerCfg.APIKeyEnv == "" {
+			providerCfg.APIKeyEnv = cfg.Provider.APIKeyEnv
+		}
+		if strings.TrimSpace(providerCfg.APIKey) == "" {
+			providerCfg.APIKey = cfg.Provider.APIKey
+		}
+		providerCfg.APIPath = strings.TrimSpace(providerCfg.APIPath)
+		providerCfg.AuthHeader = strings.TrimSpace(providerCfg.AuthHeader)
+		providerCfg.AuthScheme = strings.TrimSpace(providerCfg.AuthScheme)
+		providerCfg.AnthropicVersion = strings.TrimSpace(providerCfg.AnthropicVersion)
+		if providerCfg.Type == "anthropic" && providerCfg.AnthropicVersion == "" {
+			providerCfg.AnthropicVersion = "2023-06-01"
+		}
+		if providerCfg.ExtraHeaders == nil {
+			providerCfg.ExtraHeaders = map[string]string{}
+		}
+		delete(cfg.ProviderRuntime.Providers, id)
+		cfg.ProviderRuntime.Providers[normalizedID] = providerCfg
 	}
 	for key, value := range cfg.Provider.ExtraHeaders {
 		trimmedKey := strings.TrimSpace(key)

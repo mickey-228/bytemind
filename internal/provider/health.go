@@ -29,6 +29,7 @@ type healthState struct {
 	providerID    ProviderID
 	status        HealthStatus
 	outcomes      []bool
+	probeInFlight bool
 	nextProbeAt   time.Time
 	lastCheckAt   time.Time
 	lastFailureAt time.Time
@@ -100,19 +101,31 @@ func (h *healthChecker) Check(ctx context.Context, id ProviderID) error {
 	if state.status == HealthStatusUnavailable {
 		state.status = HealthStatusHalfOpen
 	}
+	if state.status == HealthStatusHalfOpen {
+		if state.probeInFlight {
+			snapshot := h.snapshotLocked(state)
+			h.mu.Unlock()
+			return unavailableHealthError(snapshot)
+		}
+		state.probeInFlight = true
+	}
 	state.lastCheckAt = now
 	h.mu.Unlock()
 	if h.checker == nil {
+		h.finishProbe(id, false)
 		return nil
 	}
 	err := h.checker(ctx, id)
 	if errors.Is(err, context.Canceled) {
+		h.finishProbe(id, true)
 		return err
 	}
 	if err != nil {
+		h.finishProbe(id, false)
 		h.RecordFailure(ctx, id, err)
 		return err
 	}
+	h.finishProbe(id, false)
 	h.RecordSuccess(ctx, id)
 	return nil
 }
@@ -210,6 +223,22 @@ func (h *healthChecker) now() time.Time {
 		return h.clock()
 	}
 	return time.Now()
+}
+
+func (h *healthChecker) finishProbe(id ProviderID, preserveOnCancel bool) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	state, ok := h.providers[id]
+	if !ok {
+		return
+	}
+	if preserveOnCancel && state.status == HealthStatusHalfOpen {
+		return
+	}
+	state.probeInFlight = false
 }
 
 func (h *healthChecker) ensureStateLocked(id ProviderID) *healthState {

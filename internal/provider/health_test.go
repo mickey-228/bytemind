@@ -109,6 +109,24 @@ func TestExternalHealthTickerTick(t *testing.T) {
 	}
 }
 
+func TestExternalHealthTickerTickReturnsAggregatedErrors(t *testing.T) {
+	checker := NewHealthChecker(HealthConfig{FailThreshold: 1, RecoverProbeSec: 1, RecoverSuccessThreshold: 1}, func(_ context.Context, id ProviderID) error {
+		return &Error{Code: ErrCodeUnavailable, Provider: id, Message: "down", Retryable: true}
+	}).(*healthChecker)
+	now := time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC)
+	checker.clock = func() time.Time { return now }
+	checker.RecordFailure(context.Background(), "openai", &Error{Code: ErrCodeUnavailable, Retryable: true})
+	checker.RecordFailure(context.Background(), "anthropic", &Error{Code: ErrCodeUnavailable, Retryable: true})
+	checker.providers["openai"].nextProbeAt = now
+	checker.providers["anthropic"].nextProbeAt = now
+	ticker := NewExternalHealthTicker(checker, func(context.Context) ([]ProviderID, error) {
+		return []ProviderID{"openai", "anthropic"}, nil
+	})
+	if err := ticker.Tick(context.Background()); err == nil {
+		t.Fatal("expected aggregated error")
+	}
+}
+
 func TestHealthCheckerOnlyProbesUnavailableOrHalfOpen(t *testing.T) {
 	calls := 0
 	checker := NewHealthChecker(HealthConfig{FailThreshold: 1, RecoverProbeSec: 5, RecoverSuccessThreshold: 1}, func(_ context.Context, _ ProviderID) error {
@@ -134,6 +152,40 @@ func TestHealthCheckerOnlyProbesUnavailableOrHalfOpen(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("expected exactly one active probe, got %d", calls)
+	}
+}
+
+func TestHealthCheckerOnlyAllowsOneHalfOpenProbe(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	checker := NewHealthChecker(HealthConfig{FailThreshold: 1, RecoverProbeSec: 1, RecoverSuccessThreshold: 1}, func(_ context.Context, _ ProviderID) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}).(*healthChecker)
+	now := time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC)
+	checker.clock = func() time.Time { return now }
+	checker.RecordFailure(context.Background(), "openai", &Error{Code: ErrCodeUnavailable, Retryable: true})
+	checker.providers["openai"].nextProbeAt = now
+	errCh := make(chan error, 2)
+	go func() { errCh <- checker.Check(context.Background(), "openai") }()
+	<-started
+	go func() { errCh <- checker.Check(context.Background(), "openai") }()
+	secondErr := <-errCh
+	if secondErr == nil {
+		secondErr = <-errCh
+	}
+	if secondErr == nil {
+		t.Fatal("expected concurrent half-open probe to be rejected")
+	}
+	close(release)
+	firstErr := <-errCh
+	if firstErr != nil {
+		t.Fatalf("expected active probe to succeed, got %v", firstErr)
+	}
+	snapshot := checker.Status(context.Background(), "openai")
+	if snapshot.Status != HealthStatusHealthy {
+		t.Fatalf("expected provider to recover, got %#v", snapshot)
 	}
 }
 

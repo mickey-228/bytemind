@@ -1,6 +1,9 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 type ExternalHealthTicker struct {
 	health HealthChecker
@@ -19,10 +22,14 @@ func (t *ExternalHealthTicker) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, id := range ids {
-		if err := t.health.Check(ctx, id); err != nil && ctx.Err() != nil {
-			return err
+		if err := t.health.Check(ctx, id); err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }

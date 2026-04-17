@@ -88,10 +88,15 @@ func (info ExtensionInfo) Valid() bool {
 	}
 	switch info.Kind {
 	case ExtensionMCP, ExtensionSkill:
-		return true
 	default:
 		return false
 	}
+	switch info.Source.Scope {
+	case ExtensionScopeBuiltin, ExtensionScopeUser, ExtensionScopeProject, ExtensionScopeRemote:
+	default:
+		return false
+	}
+	return strings.TrimSpace(info.Source.Ref) != ""
 }
 
 func (info ExtensionInfo) IsZero() bool {

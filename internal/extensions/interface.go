@@ -32,8 +32,8 @@ func (NopManager) Unload(_ context.Context, _ string) error {
 	return nil
 }
 
-func (NopManager) Get(_ context.Context, _ string) (ExtensionInfo, error) {
-	return ExtensionInfo{}, nil
+func (NopManager) Get(_ context.Context, extensionID string) (ExtensionInfo, error) {
+	return ExtensionInfo{}, wrapError(ErrCodeNotFound, "extension not found", nil)
 }
 
 func (NopManager) List(_ context.Context) ([]ExtensionInfo, error) {

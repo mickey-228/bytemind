@@ -26,11 +26,18 @@ func TestNopManagerUnload(t *testing.T) {
 func TestNopManagerGet(t *testing.T) {
 	mgr := NopManager{}
 	item, err := mgr.Get(nil, "skill.review")
-	if err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	if !item.IsZero() {
+	if item != (ExtensionInfo{}) {
 		t.Fatal("expected zero extension info")
+	}
+	if err == nil {
+		t.Fatal("expected not found error")
+	}
+	var extErr *ExtensionError
+	if !errors.As(err, &extErr) {
+		t.Fatalf("expected ExtensionError, got %T", err)
+	}
+	if extErr.Code != ErrCodeNotFound {
+		t.Fatalf("unexpected code: %s", extErr.Code)
 	}
 }
 
@@ -66,6 +73,9 @@ func TestExtensionInfoValid(t *testing.T) {
 		{ID: "skill.review", Kind: ExtensionSkill},
 		{ID: "skill.review", Name: "review"},
 		{ID: "skill.review", Name: "review", Kind: ExtensionKind("unknown")},
+		{ID: "skill.review", Name: "review", Kind: ExtensionSkill, Source: ExtensionSource{Ref: ".bytemind/skills/review"}},
+		{ID: "skill.review", Name: "review", Kind: ExtensionSkill, Source: ExtensionSource{Scope: ExtensionScopeProject}},
+		{ID: "skill.review", Name: "review", Kind: ExtensionSkill, Source: ExtensionSource{Scope: ExtensionScope("bad"), Ref: ".bytemind/skills/review"}},
 	}
 	for _, tc := range cases {
 		if tc.Valid() {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -106,6 +107,13 @@ type QuotaManager interface {
 
 type TaskExecutorFunc func(ctx context.Context, task Task) ([]byte, error)
 
+const TaskExecutionTokenMetadataKey = "runtime_execution_token"
+
+type TaskExecutionRegistry interface {
+	RegisterExecution(token string, executor TaskExecutorFunc)
+	UnregisterExecution(token string)
+}
+
 type TaskEventStore interface {
 	AppendTaskEvent(ctx context.Context, event TaskEvent) error
 	AppendTaskLog(ctx context.Context, taskID corepkg.TaskID, entry TaskLogEntry) error
@@ -120,6 +128,12 @@ func (NopTaskEventStore) AppendTaskEvent(context.Context, TaskEvent) error {
 func (NopTaskEventStore) AppendTaskLog(context.Context, corepkg.TaskID, TaskLogEntry) error {
 	return nil
 }
+
+const (
+	defaultReadIncrementLimit = 200
+	streamBufferSize          = 32
+	defaultTerminalHistoryCap = 256
+)
 
 type InMemoryTaskManagerOption func(*InMemoryTaskManager)
 
@@ -141,11 +155,31 @@ func WithTaskExecutor(executor TaskExecutorFunc) InMemoryTaskManagerOption {
 	}
 }
 
-const (
-	defaultReadIncrementLimit = 200
-	streamBufferSize          = 32
-	defaultTerminalHistoryCap = 256
-)
+func (m *InMemoryTaskManager) RegisterExecution(token string, executor TaskExecutorFunc) {
+	if m == nil {
+		return
+	}
+	token = normalizeExecutionToken(token)
+	if token == "" || executor == nil {
+		return
+	}
+	m.mu.Lock()
+	m.executions[token] = executor
+	m.mu.Unlock()
+}
+
+func (m *InMemoryTaskManager) UnregisterExecution(token string) {
+	if m == nil {
+		return
+	}
+	token = normalizeExecutionToken(token)
+	if token == "" {
+		return
+	}
+	m.mu.Lock()
+	delete(m.executions, token)
+	m.mu.Unlock()
+}
 
 // InMemoryTaskManager is a safe placeholder until runtime orchestration is wired.
 type InMemoryTaskManager struct {
@@ -155,6 +189,7 @@ type InMemoryTaskManager struct {
 	runCancels         map[corepkg.TaskID]context.CancelFunc
 	parentChildren     map[corepkg.TaskID]map[corepkg.TaskID]struct{}
 	childParent        map[corepkg.TaskID]corepkg.TaskID
+	executions         map[string]TaskExecutorFunc
 	idSeq              atomic.Uint64
 	events             map[corepkg.TaskID][]TaskEvent
 	logs               map[corepkg.TaskID][]TaskLogEntry
@@ -174,6 +209,7 @@ func NewInMemoryTaskManager(opts ...InMemoryTaskManagerOption) *InMemoryTaskMana
 		runCancels:         make(map[corepkg.TaskID]context.CancelFunc),
 		parentChildren:     make(map[corepkg.TaskID]map[corepkg.TaskID]struct{}),
 		childParent:        make(map[corepkg.TaskID]corepkg.TaskID),
+		executions:         make(map[string]TaskExecutorFunc),
 		events:             make(map[corepkg.TaskID][]TaskEvent),
 		logs:               make(map[corepkg.TaskID][]TaskLogEntry),
 		streamSubscribers:  make(map[corepkg.TaskID]map[uint64]chan TaskEvent),
@@ -582,7 +618,7 @@ func (m *InMemoryTaskManager) persistTaskLog(taskID corepkg.TaskID, entry TaskLo
 }
 
 func (m *InMemoryTaskManager) enqueueTask(parentCtx context.Context, id corepkg.TaskID) {
-	if m == nil || m.executor == nil {
+	if m == nil {
 		return
 	}
 	if parentCtx == nil {
@@ -592,7 +628,7 @@ func (m *InMemoryTaskManager) enqueueTask(parentCtx context.Context, id corepkg.
 }
 
 func (m *InMemoryTaskManager) runTaskAttempt(parentCtx context.Context, id corepkg.TaskID) {
-	if m == nil || m.executor == nil {
+	if m == nil {
 		return
 	}
 	if parentCtx == nil {
@@ -610,6 +646,29 @@ func (m *InMemoryTaskManager) runTaskAttempt(parentCtx context.Context, id corep
 	task, ok := m.tasks[id]
 	if !ok {
 		m.mu.Unlock()
+		return
+	}
+	executor := m.resolveExecutionLocked(task)
+	if executor == nil {
+		if task.Status != corepkg.TaskPending {
+			m.mu.Unlock()
+			return
+		}
+		if err := ValidateTaskTransition(task.Status, corepkg.TaskFailed, TransitionOptions{}); err != nil {
+			m.mu.Unlock()
+			return
+		}
+		finished := time.Now().UTC()
+		task.Status = corepkg.TaskFailed
+		task.ErrorCode = ErrorCodeNotImplemented
+		task.FinishedAt = &finished
+		m.tasks[id] = task
+		m.detachParentChildLinkLocked(id)
+		result := taskToResult(task)
+		waiters := m.waiters[id]
+		delete(m.waiters, id)
+		m.mu.Unlock()
+		notifyTaskWaiters(waiters, result)
 		return
 	}
 	if task.Status != corepkg.TaskPending {
@@ -642,7 +701,7 @@ func (m *InMemoryTaskManager) runTaskAttempt(parentCtx context.Context, id corep
 	if task.Spec.Timeout > 0 {
 		execCtx, timeoutCancel = context.WithTimeout(runCtx, task.Spec.Timeout)
 	}
-	output, execErr := m.executor(execCtx, task)
+	output, execErr := executor(execCtx, task)
 	timeoutCancel()
 	runCancel()
 
@@ -696,13 +755,7 @@ func (m *InMemoryTaskManager) runTaskAttempt(parentCtx context.Context, id corep
 	m.persistTaskLog(current.ID, logEntry)
 
 	if hasTask {
-		for _, waiter := range waiters {
-			select {
-			case waiter <- result:
-			default:
-			}
-			close(waiter)
-		}
+		notifyTaskWaiters(waiters, result)
 	}
 }
 
@@ -720,6 +773,16 @@ func mapExecutionResult(execErr error) (corepkg.TaskStatus, string) {
 		return corepkg.TaskFailed, code
 	}
 	return corepkg.TaskFailed, ErrorCodeTaskExecutionFailed
+}
+
+func notifyTaskWaiters(waiters []chan TaskResult, result TaskResult) {
+	for _, waiter := range waiters {
+		select {
+		case waiter <- result:
+		default:
+		}
+		close(waiter)
+	}
 }
 
 func (m *InMemoryTaskManager) removeStreamSubscriber(taskID corepkg.TaskID, subscriberID uint64) {
@@ -843,6 +906,25 @@ func cloneTaskSpec(spec TaskSpec) TaskSpec {
 		}
 	}
 	return cloned
+}
+
+func (m *InMemoryTaskManager) resolveExecutionLocked(task Task) TaskExecutorFunc {
+	if m == nil {
+		return nil
+	}
+	if len(task.Spec.Metadata) > 0 {
+		token := normalizeExecutionToken(task.Spec.Metadata[TaskExecutionTokenMetadataKey])
+		if token != "" {
+			if executor := m.executions[token]; executor != nil {
+				return executor
+			}
+		}
+	}
+	return m.executor
+}
+
+func normalizeExecutionToken(token string) string {
+	return strings.TrimSpace(token)
 }
 
 func detachContext(ctx context.Context) context.Context {

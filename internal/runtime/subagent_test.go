@@ -146,7 +146,7 @@ func TestInMemoryTaskManagerParentCancelPropagatesToChild(t *testing.T) {
 	}
 }
 
-func TestInMemorySubAgentCoordinatorWaitContextTimeoutDoesNotPrematurelyReleaseQuota(t *testing.T) {
+func TestInMemorySubAgentCoordinatorWaitContextTimeoutDoesNotReleaseQuotaBeforeTerminal(t *testing.T) {
 	blocker := make(chan struct{})
 	manager := NewInMemoryTaskManager(
 		WithTaskExecutor(func(ctx context.Context, _ Task) ([]byte, error) {
@@ -172,42 +172,50 @@ func TestInMemorySubAgentCoordinatorWaitContextTimeoutDoesNotPrematurelyReleaseQ
 	}
 	waitUntilTaskStatus(t, manager, firstID, corepkg.TaskRunning, 2*time.Second)
 
-	waitCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer waitCancel()
 	_, err = coordinator.Wait(waitCtx, firstID)
+	if err == nil {
+		t.Fatal("expected wait to fail with deadline exceeded")
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected wait timeout, got %v", err)
+		t.Fatalf("expected deadline exceeded, got %v", err)
 	}
 
 	_, err = coordinator.Spawn(context.Background(), TaskSpec{
-		Name: "second",
+		Name: "second-before-terminal",
 		Metadata: map[string]string{
 			"quota_key": "shared",
 		},
 	})
 	if err == nil {
-		t.Fatal("expected quota exceeded while first task is still running")
+		t.Fatal("expected quota exceeded before first task reaches terminal state")
 	}
 	if !hasErrorCode(err, ErrorCodeQuotaExceeded) {
 		t.Fatalf("expected error code %q, got %q", ErrorCodeQuotaExceeded, errorCode(err))
 	}
 
 	close(blocker)
-	if _, err := coordinator.Wait(context.Background(), firstID); err != nil {
-		t.Fatalf("Wait first task after release failed: %v", err)
+	result, err := coordinator.Wait(context.Background(), firstID)
+	if err != nil {
+		t.Fatalf("Wait first task failed: %v", err)
+	}
+	if result.Status != corepkg.TaskCompleted {
+		t.Fatalf("expected first task completed, got %s", result.Status)
 	}
 
-	thirdID, err := coordinator.Spawn(context.Background(), TaskSpec{
-		Name: "third",
+	secondID, err := coordinator.Spawn(context.Background(), TaskSpec{
+		Name: "second-after-terminal",
 		Metadata: map[string]string{
 			"quota_key": "shared",
 		},
 	})
 	if err != nil {
-		t.Fatalf("third Spawn failed after first task completion: %v", err)
+		t.Fatalf("second Spawn failed after terminal release: %v", err)
 	}
-	if _, err := coordinator.Wait(context.Background(), thirdID); err != nil {
-		t.Fatalf("Wait third task failed: %v", err)
+	_, err = coordinator.Wait(context.Background(), secondID)
+	if err != nil {
+		t.Fatalf("Wait second task failed: %v", err)
 	}
 }
 

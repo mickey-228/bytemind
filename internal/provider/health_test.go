@@ -35,12 +35,12 @@ func TestHealthCheckerStateMachineTransitions(t *testing.T) {
 	}
 	checker.RecordSuccess(context.Background(), "openai")
 	snapshot = checker.Status(context.Background(), "openai")
-	if snapshot.Status != HealthStatusHealthy || snapshot.SuccessCount != 2 {
+	if snapshot.Status != HealthStatusHalfOpen || snapshot.SuccessCount != 1 {
 		t.Fatalf("unexpected half-open recovery snapshot %#v", snapshot)
 	}
 	checker.RecordSuccess(context.Background(), "openai")
 	snapshot = checker.Status(context.Background(), "openai")
-	if snapshot.Status != HealthStatusHealthy || snapshot.SuccessCount != 3 {
+	if snapshot.Status != HealthStatusHealthy || snapshot.SuccessCount != 2 {
 		t.Fatalf("unexpected healthy snapshot %#v", snapshot)
 	}
 }
@@ -244,6 +244,28 @@ func TestHealthCheckerProbeCompletionCommitsBeforeGateRelease(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("expected exactly one real probe call, got %d", calls)
+	}
+}
+
+func TestHealthCheckerCheckWithoutProbeDoesNotAutoRecover(t *testing.T) {
+	checker := NewHealthChecker(HealthConfig{FailThreshold: 1, RecoverProbeSec: 1, RecoverSuccessThreshold: 2}, nil).(*healthChecker)
+	now := time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC)
+	checker.clock = func() time.Time { return now }
+	checker.RecordFailure(context.Background(), "openai", &Error{Code: ErrCodeUnavailable, Retryable: true})
+	checker.providers["openai"].nextProbeAt = now
+	if err := checker.Check(context.Background(), "openai"); err != nil {
+		t.Fatalf("expected gate-only half-open check, got %v", err)
+	}
+	snapshot := checker.Status(context.Background(), "openai")
+	if snapshot.Status != HealthStatusHalfOpen || snapshot.SuccessCount != 0 {
+		t.Fatalf("expected no-result check to keep half_open without synthetic success, got %#v", snapshot)
+	}
+	if err := checker.Check(context.Background(), "openai"); err != nil {
+		t.Fatalf("expected repeated gate-only check, got %v", err)
+	}
+	snapshot = checker.Status(context.Background(), "openai")
+	if snapshot.Status != HealthStatusHalfOpen || snapshot.SuccessCount != 0 {
+		t.Fatalf("expected no auto recovery without real probe, got %#v", snapshot)
 	}
 }
 

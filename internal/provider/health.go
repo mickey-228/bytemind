@@ -112,7 +112,7 @@ func (h *healthChecker) Check(ctx context.Context, id ProviderID) error {
 	state.lastCheckAt = now
 	h.mu.Unlock()
 	if h.checker == nil {
-		h.completeProbe(ctx, id, nil)
+		h.completeProbeNoResult(id)
 		return nil
 	}
 	err := h.checker(ctx, id)
@@ -217,6 +217,23 @@ func (h *healthChecker) now() time.Time {
 		return h.clock()
 	}
 	return time.Now()
+}
+
+func (h *healthChecker) completeProbeNoResult(id ProviderID) {
+	if h == nil {
+		return
+	}
+	id = normalizeRouteProviderID(id)
+	if id == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	state, ok := h.providers[id]
+	if !ok {
+		return
+	}
+	state.probeInFlight = false
 }
 
 func (h *healthChecker) completeProbe(_ context.Context, id ProviderID, err error) {

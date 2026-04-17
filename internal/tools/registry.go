@@ -62,13 +62,6 @@ func DefaultRegistry() *Registry {
 	return r
 }
 
-func (r *Registry) Add(tool Tool) error {
-	if tool == nil {
-		return &RegistryError{Code: RegistryErrorInvalidTool, Message: "tool is required", Source: RegistrationSourceBuiltin}
-	}
-	return r.Register(tool, RegisterOptions{Source: RegistrationSourceBuiltin})
-}
-
 func (r *Registry) Register(tool Tool, opts RegisterOptions) error {
 	if tool == nil {
 		return &RegistryError{Code: RegistryErrorInvalidTool, Message: "tool is required", Source: opts.Source}
@@ -186,9 +179,16 @@ func (r *Registry) ResolveForModeWithFilters(mode planpkg.AgentMode, allowlist, 
 }
 
 func (r *Registry) mustRegisterBuiltin(tool Tool) {
-	if err := r.Register(tool, RegisterOptions{Source: RegistrationSourceBuiltin}); err != nil {
+	if err := r.addBuiltin(tool); err != nil {
 		panic(err)
 	}
+}
+
+func (r *Registry) addBuiltin(tool Tool) error {
+	if tool == nil {
+		return &RegistryError{Code: RegistryErrorInvalidTool, Message: "tool is required", Source: RegistrationSourceBuiltin}
+	}
+	return r.Register(tool, RegisterOptions{Source: RegistrationSourceBuiltin})
 }
 
 func (r *Registry) ensureMapsLocked() {

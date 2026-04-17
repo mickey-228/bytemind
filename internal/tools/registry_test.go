@@ -161,17 +161,6 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 	}
 }
 
-func TestRegistryAddSupportsUncomparableToolType(t *testing.T) {
-	registry := &Registry{}
-	tool := uncomparableTool{name: "map_tool", payload: map[string]string{"k": "v"}}
-	if err := registry.Add(tool); err != nil {
-		t.Fatalf("add failed: %v", err)
-	}
-	if _, ok := registry.Get("map_tool"); !ok {
-		t.Fatal("expected added tool")
-	}
-}
-
 func TestRegistryGetReturnsClonedMapStringSliceValues(t *testing.T) {
 	registry := &Registry{}
 	tool := testTool{

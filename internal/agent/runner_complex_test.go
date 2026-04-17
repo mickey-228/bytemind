@@ -159,10 +159,10 @@ func TestRunPromptExecutesMultipleToolCallsInOrder(t *testing.T) {
 	}
 
 	registry := tools.DefaultRegistry()
-	if err := registry.Add(firstTool); err != nil {
+	if err := registry.Register(firstTool, tools.RegisterOptions{Source: tools.RegistrationSourceBuiltin}); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Add(secondTool); err != nil {
+	if err := registry.Register(secondTool, tools.RegisterOptions{Source: tools.RegistrationSourceBuiltin}); err != nil {
 		t.Fatal(err)
 	}
 

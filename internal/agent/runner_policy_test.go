@@ -59,7 +59,7 @@ func TestRunPromptPolicyGatewayDeniesToolBeforeExecutor(t *testing.T) {
 		},
 	}
 	registry := tools.DefaultRegistry()
-	if err := registry.Add(blockedTool); err != nil {
+	if err := registry.Register(blockedTool, tools.RegisterOptions{Source: tools.RegistrationSourceBuiltin}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,7 +171,7 @@ func TestRunPromptPolicyGatewayAskRequestsApprovalAndExecutesTool(t *testing.T) 
 		},
 	}
 	registry := tools.DefaultRegistry()
-	if err := registry.Add(askTool); err != nil {
+	if err := registry.Register(askTool, tools.RegisterOptions{Source: tools.RegistrationSourceBuiltin}); err != nil {
 		t.Fatal(err)
 	}
 

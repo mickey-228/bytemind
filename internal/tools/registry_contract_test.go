@@ -37,22 +37,7 @@ func (t contractInvalidSpecTool) Spec() ToolSpec {
 	return t.spec
 }
 
-func TestRegistryContractAddRejectsNilTool(t *testing.T) {
-	registry := &Registry{}
-	err := registry.Add(nil)
-	if err == nil {
-		t.Fatal("expected invalid tool error")
-	}
-	var regErr *RegistryError
-	if !errors.As(err, &regErr) {
-		t.Fatalf("expected RegistryError, got %T", err)
-	}
-	if regErr.Code != RegistryErrorInvalidTool {
-		t.Fatalf("unexpected code: %s", regErr.Code)
-	}
-}
-
-func TestRegistryContractInvalidTool(t *testing.T) {
+func TestRegistryContractRegisterRejectsNilTool(t *testing.T) {
 	registry := &Registry{}
 	err := registry.Register(nil, RegisterOptions{Source: RegistrationSourceBuiltin})
 	if err == nil {
@@ -223,30 +208,12 @@ func TestRegistryContractRejectsSpecNameMismatch(t *testing.T) {
 	}
 }
 
-func TestRegistryContractAddRejectsReRegistrationWithDifferentInstance(t *testing.T) {
+func TestRegistryContractRegisterRejectsDuplicateBuiltin(t *testing.T) {
 	registry := &Registry{}
-	if err := registry.Add(contractTestTool{name: "contract_tool"}); err != nil {
-		t.Fatalf("first add failed: %v", err)
+	if err := registry.Register(contractTestTool{name: "contract_tool"}, RegisterOptions{Source: RegistrationSourceBuiltin}); err != nil {
+		t.Fatalf("first register failed: %v", err)
 	}
-	err := registry.Add(contractTestTool{name: "contract_tool"})
-	if err == nil {
-		t.Fatal("expected duplicate error")
-	}
-	var regErr *RegistryError
-	if !errors.As(err, &regErr) {
-		t.Fatalf("expected RegistryError, got %T", err)
-	}
-	if regErr.Code != RegistryErrorDuplicateName {
-		t.Fatalf("unexpected code: %s", regErr.Code)
-	}
-}
-
-func TestRegistryContractAddReturnsStructuredError(t *testing.T) {
-	registry := &Registry{}
-	if err := registry.Add(contractTestTool{name: "contract_tool"}); err != nil {
-		t.Fatalf("first add failed: %v", err)
-	}
-	err := registry.Add(contractTestTool{name: "contract_tool"})
+	err := registry.Register(contractTestTool{name: "contract_tool"}, RegisterOptions{Source: RegistrationSourceBuiltin})
 	if err == nil {
 		t.Fatal("expected duplicate error")
 	}

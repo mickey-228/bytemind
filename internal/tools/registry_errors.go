@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"bytemind/internal/llm"
@@ -159,36 +160,64 @@ func cloneAnySlice(input []any) []any {
 }
 
 func cloneAny(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return cloneAnyMap(typed)
-	case []any:
-		return cloneAnySlice(typed)
-	case map[string][]string:
-		cloned := make(map[string][]string, len(typed))
-		for key, item := range typed {
-			cloned[key] = append([]string(nil), item...)
+	return cloneReflectValue(reflect.ValueOf(value)).Interface()
+}
+
+func cloneReflectValue(value reflect.Value) reflect.Value {
+	if !value.IsValid() {
+		return value
+	}
+
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		cloned := cloneReflectValue(value.Elem())
+		wrapped := reflect.New(value.Type()).Elem()
+		wrapped.Set(cloned)
+		return wrapped
+	case reflect.Pointer:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		cloned := reflect.New(value.Type().Elem())
+		cloned.Elem().Set(cloneReflectValue(value.Elem()))
+		return cloned
+	case reflect.Map:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		cloned := reflect.MakeMapWithSize(value.Type(), value.Len())
+		iter := value.MapRange()
+		for iter.Next() {
+			cloned.SetMapIndex(iter.Key(), cloneReflectValue(iter.Value()))
 		}
 		return cloned
-	case []string:
-		return append([]string(nil), typed...)
-	case []map[string]any:
-		cloned := make([]map[string]any, len(typed))
-		for i, item := range typed {
-			cloned[i] = cloneAnyMap(item)
+	case reflect.Slice:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		cloned := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for i := 0; i < value.Len(); i++ {
+			cloned.Index(i).Set(cloneReflectValue(value.Index(i)))
 		}
 		return cloned
-	case []map[string]string:
-		cloned := make([]map[string]string, len(typed))
-		for i, item := range typed {
-			next := make(map[string]string, len(item))
-			for key, value := range item {
-				next[key] = value
+	case reflect.Array:
+		cloned := reflect.New(value.Type()).Elem()
+		for i := 0; i < value.Len(); i++ {
+			cloned.Index(i).Set(cloneReflectValue(value.Index(i)))
+		}
+		return cloned
+	case reflect.Struct:
+		cloned := reflect.New(value.Type()).Elem()
+		for i := 0; i < value.NumField(); i++ {
+			if cloned.Field(i).CanSet() {
+				cloned.Field(i).Set(cloneReflectValue(value.Field(i)))
 			}
-			cloned[i] = next
 		}
 		return cloned
 	default:
-		return typed
+		return value
 	}
 }

@@ -15,6 +15,7 @@ import (
 func (r *Runner) runPromptTurns(ctx context.Context, sess *session.Session, setup runPromptSetup, out io.Writer) (string, error) {
 	toolSequenceTracker := runtimepkg.NewToolSequenceTracker(runtimepkg.DefaultRepeatedToolSequenceThreshold)
 	executedToolNames := make([]string, 0, 16)
+	r.renderApprovalPrecheck(out, setup)
 
 	for step := 0; step < r.config.MaxIterations; step++ {
 		messages, err := r.messagesForStep(ctx, sess, setup, step, out)

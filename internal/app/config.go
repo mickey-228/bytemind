@@ -52,6 +52,9 @@ func LoadRuntimeConfig(req ConfigRequest) (config.Config, error) {
 			return cfg, fmt.Errorf("invalid -away-policy value: %q (expected auto_deny_continue or fail_fast)", policy)
 		}
 	}
+	if req.MaxIterationsOverride < 0 {
+		return cfg, fmt.Errorf("-max-iterations must be greater than 0")
+	}
 	if req.MaxIterationsOverride > 0 {
 		cfg.MaxIterations = req.MaxIterationsOverride
 	}

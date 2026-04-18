@@ -65,8 +65,8 @@ func TestLoadIgnoresInvalidTokenQuotaEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.TokenQuota != 5000 {
-		t.Fatalf("expected invalid token quota to fall back to default 5000, got %d", cfg.TokenQuota)
+	if cfg.TokenQuota != DefaultTokenQuota {
+		t.Fatalf("expected invalid token quota to fall back to default %d, got %d", DefaultTokenQuota, cfg.TokenQuota)
 	}
 }
 
@@ -196,6 +196,7 @@ func TestLoadMergesUserAndProjectConfigWithProjectPrecedence(t *testing.T) {
 	workspace := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("BYTEMIND_HOME", home)
+	t.Setenv("BYTEMIND_API_KEY", "")
 
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		t.Fatal(err)
@@ -263,6 +264,7 @@ func TestLoadIgnoresLegacyBytemindConfigJSON(t *testing.T) {
 	workspace := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("BYTEMIND_HOME", home)
+	t.Setenv("BYTEMIND_API_KEY", "")
 
 	if err := writeConfig(filepath.Join(home, "config.json"), map[string]any{
 		"provider": map[string]any{

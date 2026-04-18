@@ -57,11 +57,7 @@ func (m *extensionManager) Load(_ context.Context, source string) (ExtensionInfo
 	if err != nil {
 		return ExtensionInfo{}, err
 	}
-	if err := m.reload(); err != nil {
-		if current, ok := m.state.get(loaded.ID); ok {
-			return current, wrapError(ErrCodeAlreadyLoaded, "extension already loaded", nil)
-		}
-	}
+	_ = m.reload()
 	if current, ok := m.state.get(loaded.ID); ok {
 		m.mu.RLock()
 		_, manual := m.manual[loaded.ID]

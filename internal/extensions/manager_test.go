@@ -121,6 +121,41 @@ func TestManagerLoadRejectsAlreadyLoaded(t *testing.T) {
 	}
 }
 
+func TestManagerLoadIsIdempotentDespiteUnrelatedDiscoveryErrors(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, ".bytemind", "skills")
+	review := filepath.Join(project, "review")
+	broken := filepath.Join(project, "broken")
+	if err := os.MkdirAll(review, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(review, "skill.json"), []byte(`{"name":"review"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(review, "SKILL.md"), []byte("# /review"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "skill.json"), []byte(`{"name":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(root)
+	first, err := mgr.Load(context.Background(), review)
+	if err != nil {
+		t.Fatalf("first load failed: %v", err)
+	}
+	second, err := mgr.Load(context.Background(), review)
+	if err != nil {
+		t.Fatalf("expected idempotent reload, got %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected same extension, got %q vs %q", second.ID, first.ID)
+	}
+}
+
 func TestManagerUnloadIgnoresUnrelatedBrokenManifest(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, ".bytemind", "skills")

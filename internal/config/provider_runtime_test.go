@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -85,5 +86,41 @@ func TestLegacyProviderRuntimeConfigNormalizesProviderIDs(t *testing.T) {
 				t.Fatalf("unexpected providers %#v", runtime.Providers)
 			}
 		})
+	}
+}
+
+func TestConfigLoadRejectsDuplicateNormalizedProviderRuntimeIDs(t *testing.T) {
+	workspace := t.TempDir()
+	writeProviderRuntimeConfigFile(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"provider_runtime": map[string]any{
+			"default_provider": "openai",
+			"default_model":    "gpt-5.4-mini",
+			"providers": map[string]any{
+				"OpenAI": map[string]any{
+					"type":     "openai-compatible",
+					"base_url": "https://api.openai.com/v1",
+					"model":    "gpt-5.4-mini",
+				},
+				"openai": map[string]any{
+					"type":     "openai-compatible",
+					"base_url": "https://api.openai.com/v1",
+					"model":    "gpt-5.4-mini",
+				},
+			},
+		},
+	})
+
+	_, err := Load(workspace, "")
+	if err == nil {
+		t.Fatal("expected duplicate provider id error")
+	}
+	if !strings.Contains(err.Error(), "duplicate provider id after normalization") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

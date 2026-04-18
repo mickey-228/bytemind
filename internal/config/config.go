@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -355,8 +356,16 @@ func normalize(cfg *Config) error {
 	if cfg.ProviderRuntime.Providers == nil {
 		cfg.ProviderRuntime.Providers = map[string]ProviderConfig{}
 	}
+	normalizedProviders := make(map[string]ProviderConfig, len(cfg.ProviderRuntime.Providers))
+	normalizedSources := make(map[string]string, len(cfg.ProviderRuntime.Providers))
 	for id, providerCfg := range cfg.ProviderRuntime.Providers {
 		normalizedID := strings.ToLower(strings.TrimSpace(id))
+		if normalizedID == "" {
+			return errors.New("provider_runtime.providers contains an empty provider id")
+		}
+		if existingSource, exists := normalizedSources[normalizedID]; exists {
+			return fmt.Errorf("provider_runtime.providers has duplicate provider id after normalization: %q (from %q and %q)", normalizedID, existingSource, id)
+		}
 		providerCfg.Type = normalizeProviderType(providerCfg.Type)
 		if providerCfg.Type == "" {
 			if providerCfg.AutoDetectType {
@@ -387,9 +396,10 @@ func normalize(cfg *Config) error {
 		if providerCfg.ExtraHeaders == nil {
 			providerCfg.ExtraHeaders = map[string]string{}
 		}
-		delete(cfg.ProviderRuntime.Providers, id)
-		cfg.ProviderRuntime.Providers[normalizedID] = providerCfg
+		normalizedProviders[normalizedID] = providerCfg
+		normalizedSources[normalizedID] = id
 	}
+	cfg.ProviderRuntime.Providers = normalizedProviders
 	for key, value := range cfg.Provider.ExtraHeaders {
 		trimmedKey := strings.TrimSpace(key)
 		trimmedValue := strings.TrimSpace(value)

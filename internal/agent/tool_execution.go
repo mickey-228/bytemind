@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	corepkg "bytemind/internal/core"
@@ -48,6 +49,8 @@ func (r *Runner) executeToolCall(
 	result, execErr := r.executor.ExecuteForMode(ctx, runMode, call.Function.Name, call.Function.Arguments, &tools.ExecutionContext{
 		Workspace:      r.workspace,
 		ApprovalPolicy: r.config.ApprovalPolicy,
+		ApprovalMode:   r.config.ApprovalMode,
+		AwayPolicy:     r.config.AwayPolicy,
 		Approval:       r.approval,
 		Session:        sess,
 		TaskManager:    r.taskManager,
@@ -113,5 +116,22 @@ func (r *Runner) executeToolCall(
 			Plan:      planpkg.CloneState(sess.Plan),
 		})
 	}
+	if shouldStopRunForAwayFailFast(execErr, r.config.ApprovalMode, r.config.AwayPolicy) {
+		return fmt.Errorf("away mode fail_fast stopped run after %s permission denial: %w", call.Function.Name, execErr)
+	}
 	return nil
+}
+
+func shouldStopRunForAwayFailFast(err error, approvalMode, awayPolicy string) bool {
+	if err == nil {
+		return false
+	}
+	if strings.TrimSpace(approvalMode) != "away" || strings.TrimSpace(awayPolicy) != "fail_fast" {
+		return false
+	}
+	execErr, ok := tools.AsToolExecError(err)
+	if !ok {
+		return false
+	}
+	return execErr.Code == tools.ToolErrorPermissionDenied
 }

@@ -580,6 +580,122 @@ func TestRunPromptEncodesToolExecutionErrorsAndContinues(t *testing.T) {
 	}
 }
 
+func TestRunPromptAwayAutoDenyContinueKeepsRunningAfterPermissionDenied(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name:      "write_file",
+					Arguments: `{"path":"x.txt","content":"x"}`,
+				},
+			}},
+		},
+		{
+			Role:    "assistant",
+			Content: "continued after denied approval",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:       config.ProviderConfig{Model: "test-model"},
+			MaxIterations:  4,
+			Stream:         false,
+			ApprovalPolicy: "on-request",
+			ApprovalMode:   "away",
+			AwayPolicy:     "auto_deny_continue",
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "trigger permission path", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "continued after denied approval" {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+	if len(sess.Messages) < 3 {
+		t.Fatalf("expected tool result message, got %#v", sess.Messages)
+	}
+	toolMsg := sess.Messages[2]
+	if !strings.Contains(toolMsg.Content, `"ok":false`) || !strings.Contains(toolMsg.Content, "away mode") {
+		t.Fatalf("expected away-mode denial payload, got %q", toolMsg.Content)
+	}
+}
+
+func TestRunPromptAwayFailFastStopsAfterPermissionDenied(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name:      "write_file",
+					Arguments: `{"path":"x.txt","content":"x"}`,
+				},
+			}},
+		},
+		{
+			Role:    "assistant",
+			Content: "this reply should not be consumed",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:       config.ProviderConfig{Model: "test-model"},
+			MaxIterations:  4,
+			Stream:         false,
+			ApprovalPolicy: "on-request",
+			ApprovalMode:   "away",
+			AwayPolicy:     "fail_fast",
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "trigger permission path", "build", io.Discard)
+	if err == nil {
+		t.Fatal("expected fail_fast mode to stop run after permission denial")
+	}
+	if strings.TrimSpace(answer) != "" {
+		t.Fatalf("expected empty answer when fail_fast stops run, got %q", answer)
+	}
+	if !strings.Contains(err.Error(), "fail_fast stopped run") {
+		t.Fatalf("expected fail_fast stop reason, got %v", err)
+	}
+	if len(sess.Messages) != 3 {
+		t.Fatalf("expected session to stop after first denied tool call, got %#v", sess.Messages)
+	}
+	if !strings.Contains(sess.Messages[2].Content, "away_policy=fail_fast") {
+		t.Fatalf("expected denied tool payload to include fail_fast policy, got %q", sess.Messages[2].Content)
+	}
+}
+
 func TestRunPromptFallsBackWhenAssistantReplyIsEmpty(t *testing.T) {
 	workspace := t.TempDir()
 	store, err := session.NewStore(t.TempDir())

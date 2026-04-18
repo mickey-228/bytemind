@@ -24,6 +24,8 @@ const (
 type Config struct {
 	Provider       ProviderConfig      `json:"provider"`
 	ApprovalPolicy string              `json:"approval_policy"`
+	ApprovalMode   string              `json:"approval_mode"`
+	AwayPolicy     string              `json:"away_policy"`
 	MaxIterations  int                 `json:"max_iterations"`
 	Stream         bool                `json:"stream"`
 	TokenQuota     int                 `json:"token_quota"`
@@ -72,6 +74,8 @@ func Default(workspace string) Config {
 			APIKeyEnv: "BYTEMIND_API_KEY",
 		},
 		ApprovalPolicy: "on-request",
+		ApprovalMode:   "interactive",
+		AwayPolicy:     "auto_deny_continue",
 		MaxIterations:  32,
 		Stream:         true,
 		TokenQuota:     5000,
@@ -195,6 +199,8 @@ func ensureDefaultConfigFile(home string) error {
 			AnthropicVersion: "2023-06-01",
 		},
 		ApprovalPolicy: "on-request",
+		ApprovalMode:   "interactive",
+		AwayPolicy:     "auto_deny_continue",
 		MaxIterations:  32,
 		Stream:         true,
 		TokenQuota:     5000,
@@ -297,6 +303,12 @@ func applyEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_APPROVAL_POLICY")); value != "" {
 		cfg.ApprovalPolicy = value
 	}
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_APPROVAL_MODE")); value != "" {
+		cfg.ApprovalMode = value
+	}
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_AWAY_POLICY")); value != "" {
+		cfg.AwayPolicy = value
+	}
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_STREAM")); value != "" {
 		if parsed, err := strconv.ParseBool(value); err == nil {
 			cfg.Stream = parsed
@@ -369,6 +381,20 @@ func normalize(cfg *Config) error {
 	case "always", "never":
 	default:
 		return errors.New("approval_policy must be one of always, on-request, never")
+	}
+	switch strings.TrimSpace(cfg.ApprovalMode) {
+	case "", "interactive":
+		cfg.ApprovalMode = "interactive"
+	case "away":
+	default:
+		return errors.New("approval_mode must be one of interactive, away")
+	}
+	switch strings.TrimSpace(cfg.AwayPolicy) {
+	case "", "auto_deny_continue":
+		cfg.AwayPolicy = "auto_deny_continue"
+	case "fail_fast":
+	default:
+		return errors.New("away_policy must be one of auto_deny_continue, fail_fast")
 	}
 	if cfg.TokenQuota < 1 {
 		cfg.TokenQuota = 5000

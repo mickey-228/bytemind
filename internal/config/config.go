@@ -346,7 +346,14 @@ func normalize(cfg *Config) error {
 		cfg.Provider.ExtraHeaders = map[string]string{}
 	}
 	if len(cfg.ProviderRuntime.Providers) == 0 {
-		cfg.ProviderRuntime = LegacyProviderRuntimeConfig(cfg.Provider)
+		legacy := LegacyProviderRuntimeConfig(cfg.Provider)
+		if strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider) == "" {
+			cfg.ProviderRuntime.DefaultProvider = legacy.DefaultProvider
+		}
+		if strings.TrimSpace(cfg.ProviderRuntime.DefaultModel) == "" {
+			cfg.ProviderRuntime.DefaultModel = legacy.DefaultModel
+		}
+		cfg.ProviderRuntime.Providers = legacy.Providers
 	}
 	cfg.ProviderRuntime.DefaultProvider = strings.ToLower(strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider))
 	cfg.ProviderRuntime.DefaultModel = strings.TrimSpace(cfg.ProviderRuntime.DefaultModel)

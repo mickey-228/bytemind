@@ -1931,6 +1931,46 @@ func TestAltVPastesClipboardImage(t *testing.T) {
 	}
 }
 
+func TestAltVUppercaseRunePastesClipboardImage(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.clipboard = fakeClipboardImageReader{
+		mediaType: "image/png",
+		data:      []byte("clipboard"),
+		fileName:  "clipboard.png",
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'V'}, Alt: true})
+	updated := got.(model)
+	if updated.input.Value() != "[Image #1]" {
+		t.Fatalf("expected alt+V to paste clipboard image placeholder, got %q", updated.input.Value())
+	}
+}
+
+func TestAltVPasteBypassesPasteEchoTransactionConsumption(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.clipboard = fakeClipboardImageReader{
+		mediaType: "image/png",
+		data:      []byte("clipboard"),
+		fileName:  "clipboard.png",
+	}
+	m.pasteTransaction = pasteTransactionState{
+		Active:             true,
+		Source:             "paste-key",
+		Payload:            "value",
+		Consumed:           0,
+		StartedAt:          time.Now(),
+		AwaitTrailingEnter: true,
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}, Alt: true})
+	updated := got.(model)
+	if updated.input.Value() != "[Image #1]" {
+		t.Fatalf("expected alt+v to paste image even when paste echo transaction is active, got %q", updated.input.Value())
+	}
+}
+
 func TestCtrlVPastesClipboardImage(t *testing.T) {
 	m := newImagePipelineModel(t)
 	m.screen = screenChat

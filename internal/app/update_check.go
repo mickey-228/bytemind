@@ -34,6 +34,8 @@ var (
 	updateCheckFetchLatestVersion = func(currentVersion string) (string, error) {
 		return fetchLatestVersionFromGitHub(currentVersion)
 	}
+	updateCheckLatestReleaseURL = "https://api.github.com/repos/" + updateCheckRepository + "/releases/latest"
+	updateCheckHTTPClient       = &http.Client{Timeout: 2 * time.Second}
 )
 
 func maybePrintUpdateReminder(cfg config.Config, w io.Writer) {
@@ -115,8 +117,7 @@ func writeUpdateCheckState(path string, state updateCheckState) error {
 }
 
 func fetchLatestVersionFromGitHub(currentVersion string) (string, error) {
-	url := "https://api.github.com/repos/" + updateCheckRepository + "/releases/latest"
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, updateCheckLatestReleaseURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -127,8 +128,7 @@ func fetchLatestVersionFromGitHub(currentVersion string) (string, error) {
 	}
 	req.Header.Set("User-Agent", "bytemind/"+userAgentVersion)
 
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := updateCheckHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}

@@ -139,7 +139,7 @@ func TestRequireApprovalNeedsStdinWhenPrompting(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected missing stdin error")
 	}
-	if !strings.Contains(err.Error(), "no stdin") {
+	if !strings.Contains(err.Error(), "approval channel is unavailable") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

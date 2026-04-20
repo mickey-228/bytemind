@@ -389,12 +389,6 @@ func newModel(opts Options) model {
 		opts.Runner.SetObserver(func(event Event) {
 			async <- agentEventMsg{Event: event}
 		})
-		opts.Runner.SetApprovalHandler(func(req ApprovalRequest) (bool, error) {
-			reply := make(chan approvalDecision, 1)
-			async <- approvalRequestMsg{Request: req, Reply: reply}
-			decision := <-reply
-			return decision.Approved, decision.Err
-		})
 	}
 
 	m := model{
@@ -455,7 +449,21 @@ func newModel(opts Options) model {
 	if m.mentionIndex != nil {
 		go m.mentionIndex.Prewarm()
 	}
+	m.installApprovalBridge()
 	return m
+}
+
+func (m *model) installApprovalBridge() {
+	if m == nil || m.runner == nil {
+		return
+	}
+	async := m.async
+	m.runner.SetApprovalHandler(func(req ApprovalRequest) (bool, error) {
+		reply := make(chan approvalDecision, 1)
+		async <- approvalRequestMsg{Request: req, Reply: reply}
+		decision := <-reply
+		return decision.Approved, decision.Err
+	})
 }
 
 func ensureZoneManager() {

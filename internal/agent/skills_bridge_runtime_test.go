@@ -102,9 +102,13 @@ func TestPrepareRunPromptSwitchingActiveSkillReplacesBridgeTools(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
+		allowed := "open_doc"
+		if name == "plan" {
+			allowed = "plan_doc"
+		}
 		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(`---
 name: `+name+`
-allowed-tools: "open_doc"
+allowed-tools: "`+allowed+`"
 ---
 # /`+name+`
 `), 0o644); err != nil {
@@ -118,6 +122,11 @@ allowed-tools: "open_doc"
 		Source: tools.RegistrationSourceBuiltin,
 	}); err != nil {
 		t.Fatalf("register open_doc failed: %v", err)
+	}
+	if err := registry.Register(runtimeBridgeTool{name: "plan_doc"}, tools.RegisterOptions{
+		Source: tools.RegistrationSourceBuiltin,
+	}); err != nil {
+		t.Fatalf("register plan_doc failed: %v", err)
 	}
 	runner := NewRunner(Options{
 		Workspace:    workspace,
@@ -150,7 +159,7 @@ allowed-tools: "open_doc"
 	if len(registry.FindByExtensionID("skill.plan")) == 0 {
 		t.Fatalf("expected active plan bridge metadata")
 	}
-	if !slices.Contains(setup.AllowedToolNames, "skill:skill_plan:open_doc") {
+	if !slices.Contains(setup.AllowedToolNames, "skill:skill_plan:plan_doc") {
 		t.Fatalf("expected plan stable key in allowlist, got %#v", setup.AllowedToolNames)
 	}
 }
@@ -165,9 +174,13 @@ func TestPrepareRunPromptSessionIsolationKeepsOtherSessionBridges(t *testing.T) 
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
+		allowed := "open_doc"
+		if name == "plan" {
+			allowed = "plan_doc"
+		}
 		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(`---
 name: `+name+`
-allowed-tools: "open_doc"
+allowed-tools: "`+allowed+`"
 ---
 # /`+name+`
 `), 0o644); err != nil {
@@ -181,6 +194,11 @@ allowed-tools: "open_doc"
 		Source: tools.RegistrationSourceBuiltin,
 	}); err != nil {
 		t.Fatalf("register open_doc failed: %v", err)
+	}
+	if err := registry.Register(runtimeBridgeTool{name: "plan_doc"}, tools.RegisterOptions{
+		Source: tools.RegistrationSourceBuiltin,
+	}); err != nil {
+		t.Fatalf("register plan_doc failed: %v", err)
 	}
 	runner := NewRunner(Options{
 		Workspace:    workspace,
@@ -293,9 +311,13 @@ func TestPrepareRunPromptConcurrentSessionsIsolation(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
+		allowed := "open_doc"
+		if name == "plan" {
+			allowed = "plan_doc"
+		}
 		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(`---
 name: `+name+`
-allowed-tools: "open_doc"
+allowed-tools: "`+allowed+`"
 ---
 # /`+name+`
 `), 0o644); err != nil {
@@ -309,6 +331,11 @@ allowed-tools: "open_doc"
 		Source: tools.RegistrationSourceBuiltin,
 	}); err != nil {
 		t.Fatalf("register open_doc failed: %v", err)
+	}
+	if err := registry.Register(runtimeBridgeTool{name: "plan_doc"}, tools.RegisterOptions{
+		Source: tools.RegistrationSourceBuiltin,
+	}); err != nil {
+		t.Fatalf("register plan_doc failed: %v", err)
 	}
 	runner := NewRunner(Options{
 		Workspace:    workspace,

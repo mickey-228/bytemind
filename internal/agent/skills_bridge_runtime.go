@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	extensionspkg "bytemind/internal/extensions"
+	"bytemind/internal/session"
 	toolspkg "bytemind/internal/tools"
 )
 
@@ -21,7 +22,12 @@ var nonBridgedBuiltinTools = map[string]struct{}{
 	"run_shell":       {},
 }
 
-func (r *Runner) syncActiveSkillBridges(active *activeSkillRuntime) error {
+type bridgeSessionState struct {
+	extensionID string
+	toolKeys    map[string]struct{}
+}
+
+func (r *Runner) syncActiveSkillBridges(sess *session.Session, active *activeSkillRuntime) error {
 	if r == nil {
 		return nil
 	}
@@ -29,26 +35,34 @@ func (r *Runner) syncActiveSkillBridges(active *activeSkillRuntime) error {
 	if !ok || registry == nil {
 		return nil
 	}
+	sessionKey := bridgeSessionKey(sess)
+	if sessionKey == "" {
+		return nil
+	}
 
 	r.bridgeMu.Lock()
 	defer r.bridgeMu.Unlock()
+	r.ensureBridgeStateLocked()
+	r.bridgeSessionTurns[sessionKey]++
 
+	state := r.bridgeSessions[sessionKey]
+	if state.toolKeys == nil {
+		state.toolKeys = map[string]struct{}{}
+	}
 	if active == nil {
-		r.clearActiveSkillBridgesLocked(registry)
-		return nil
+		return r.clearSessionBridgesLocked(registry, sessionKey)
 	}
 
 	extensionID := activeSkillExtensionID(active)
 	if extensionID == "" {
-		r.clearActiveSkillBridgesLocked(registry)
-		return nil
+		return r.clearSessionBridgesLocked(registry, sessionKey)
 	}
-	if r.activeSkillBridgeID != extensionID {
-		r.clearActiveSkillBridgesLocked(registry)
-		r.activeSkillBridgeID = extensionID
-	}
-	if r.activeSkillBridgeToolKeys == nil {
-		r.activeSkillBridgeToolKeys = map[string]struct{}{}
+	if state.extensionID != extensionID {
+		if err := r.releaseBridgeToolsLocked(registry, state.toolKeys); err != nil {
+			return err
+		}
+		state.extensionID = extensionID
+		state.toolKeys = map[string]struct{}{}
 	}
 
 	desired := map[string]struct{}{}
@@ -86,33 +100,117 @@ func (r *Runner) syncActiveSkillBridges(active *activeSkillRuntime) error {
 		desired[binding.StableKey] = struct{}{}
 	}
 
-	for toolKey := range r.activeSkillBridgeToolKeys {
+	for toolKey := range state.toolKeys {
 		if _, keep := desired[toolKey]; keep {
 			continue
 		}
+		if err := r.releaseBridgeToolRefLocked(registry, toolKey); err != nil {
+			return err
+		}
+	}
+
+	for toolKey := range desired {
+		if _, exists := state.toolKeys[toolKey]; exists {
+			continue
+		}
+		r.bridgeToolRefCounts[toolKey]++
+	}
+	state.toolKeys = desired
+	r.bridgeSessions[sessionKey] = state
+
+	return nil
+}
+
+func (r *Runner) clearSessionSkillBridges(sess *session.Session) {
+	if r == nil {
+		return
+	}
+	registry, ok := r.registry.(*toolspkg.Registry)
+	if !ok || registry == nil {
+		return
+	}
+	sessionKey := bridgeSessionKey(sess)
+	if sessionKey == "" {
+		return
+	}
+
+	r.bridgeMu.Lock()
+	defer r.bridgeMu.Unlock()
+	turns := r.bridgeSessionTurns[sessionKey]
+	if turns <= 0 {
+		return
+	}
+	turns--
+	if turns > 0 {
+		r.bridgeSessionTurns[sessionKey] = turns
+		return
+	}
+	delete(r.bridgeSessionTurns, sessionKey)
+	_ = r.clearSessionBridgesLocked(registry, sessionKey)
+}
+
+func (r *Runner) ensureBridgeStateLocked() {
+	if r.bridgeSessions == nil {
+		r.bridgeSessions = map[string]bridgeSessionState{}
+	}
+	if r.bridgeSessionTurns == nil {
+		r.bridgeSessionTurns = map[string]int{}
+	}
+	if r.bridgeToolRefCounts == nil {
+		r.bridgeToolRefCounts = map[string]int{}
+	}
+}
+
+func (r *Runner) clearSessionBridgesLocked(registry *toolspkg.Registry, sessionKey string) error {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return nil
+	}
+	state, ok := r.bridgeSessions[sessionKey]
+	if !ok {
+		return nil
+	}
+	if err := r.releaseBridgeToolsLocked(registry, state.toolKeys); err != nil {
+		return err
+	}
+	delete(r.bridgeSessions, sessionKey)
+	return nil
+}
+
+func (r *Runner) releaseBridgeToolsLocked(registry *toolspkg.Registry, toolKeys map[string]struct{}) error {
+	for toolKey := range toolKeys {
+		if err := r.releaseBridgeToolRefLocked(registry, toolKey); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runner) releaseBridgeToolRefLocked(registry *toolspkg.Registry, toolKey string) error {
+	toolKey = strings.TrimSpace(toolKey)
+	if toolKey == "" {
+		return nil
+	}
+	refs := r.bridgeToolRefCounts[toolKey]
+	if refs <= 1 {
+		delete(r.bridgeToolRefCounts, toolKey)
 		if err := registry.Unregister(toolKey); err != nil {
 			var regErr *toolspkg.RegistryError
 			if !errors.As(err, &regErr) || regErr.Code != toolspkg.RegistryErrorNotFound {
 				return err
 			}
 		}
-		delete(r.activeSkillBridgeToolKeys, toolKey)
+		return nil
 	}
-	for toolKey := range desired {
-		r.activeSkillBridgeToolKeys[toolKey] = struct{}{}
-	}
-
+	r.bridgeToolRefCounts[toolKey] = refs - 1
 	return nil
 }
 
-func (r *Runner) clearActiveSkillBridgesLocked(registry *toolspkg.Registry) {
-	if registry != nil {
-		for toolKey := range r.activeSkillBridgeToolKeys {
-			_ = registry.Unregister(toolKey)
-		}
+func bridgeSessionKey(sess *session.Session) string {
+	if sess == nil {
+		return ""
 	}
-	r.activeSkillBridgeID = ""
-	r.activeSkillBridgeToolKeys = map[string]struct{}{}
+	return strings.TrimSpace(sess.ID)
 }
 
 func normalizeBridgePolicyItem(item string) string {

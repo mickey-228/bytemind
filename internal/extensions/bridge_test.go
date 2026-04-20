@@ -230,6 +230,30 @@ func TestResolvePolicyToolSetsMapsAliasesCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestResolvePolicyToolSetsDenylistIncludesOriginalAndStableKeys(t *testing.T) {
+	allow, deny, err := ResolvePolicyToolSets(skillspkg.ToolPolicy{
+		Policy: skillspkg.ToolPolicyDenylist,
+		Items:  []string{"OPEN_DOC"},
+	}, []BridgeBinding{{
+		Source:       ExtensionSkill,
+		ExtensionID:  "skill.review",
+		OriginalName: "open_doc",
+		StableKey:    "skill:skill_review:open_doc",
+	}})
+	if err != nil {
+		t.Fatalf("ResolvePolicyToolSets failed: %v", err)
+	}
+	if allow != nil {
+		t.Fatalf("expected nil allow set, got %#v", allow)
+	}
+	if _, ok := deny["skill:skill_review:open_doc"]; !ok {
+		t.Fatalf("expected stable key in deny set: %#v", deny)
+	}
+	if _, ok := deny["open_doc"]; !ok {
+		t.Fatalf("expected original key in deny set: %#v", deny)
+	}
+}
+
 func TestResolvePolicyToolSetsRejectsAmbiguousAliases(t *testing.T) {
 	_, _, err := ResolvePolicyToolSets(skillspkg.ToolPolicy{
 		Policy: skillspkg.ToolPolicyAllowlist,

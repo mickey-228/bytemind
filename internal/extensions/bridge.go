@@ -111,8 +111,11 @@ func mapPolicyItems(policy skillspkg.ToolPolicy, bindings []BridgeBinding) (skil
 		if item == "" {
 			continue
 		}
-		if stable, ok := aliases[normalizePolicyAlias(item)]; ok {
-			mappedItems = append(mappedItems, stable)
+		if alias, ok := aliases[normalizePolicyAlias(item)]; ok {
+			mappedItems = append(mappedItems, alias.StableKey)
+			if policy.Policy == skillspkg.ToolPolicyDenylist {
+				mappedItems = append(mappedItems, alias.OriginalName)
+			}
 			continue
 		}
 		mappedItems = append(mappedItems, item)
@@ -123,8 +126,13 @@ func mapPolicyItems(policy skillspkg.ToolPolicy, bindings []BridgeBinding) (skil
 	}, nil
 }
 
-func buildPolicyAliases(bindings []BridgeBinding) (map[string]string, error) {
-	aliases := make(map[string]string, len(bindings)*2)
+type policyAlias struct {
+	OriginalName string
+	StableKey    string
+}
+
+func buildPolicyAliases(bindings []BridgeBinding) (map[string]policyAlias, error) {
+	aliases := make(map[string]policyAlias, len(bindings)*2)
 	for _, binding := range bindings {
 		original := strings.TrimSpace(binding.OriginalName)
 		stable := strings.TrimSpace(binding.StableKey)
@@ -137,10 +145,13 @@ func buildPolicyAliases(bindings []BridgeBinding) (map[string]string, error) {
 				continue
 			}
 			existing, ok := aliases[normalizedAlias]
-			if ok && existing != stable {
+			if ok && existing.StableKey != stable {
 				return nil, wrapError(ErrCodeConflict, fmt.Sprintf("policy alias %q maps to multiple tools", alias), nil)
 			}
-			aliases[normalizedAlias] = stable
+			aliases[normalizedAlias] = policyAlias{
+				OriginalName: original,
+				StableKey:    stable,
+			}
 		}
 	}
 	return aliases, nil

@@ -87,9 +87,10 @@ type Runner struct {
 	stdin         io.Reader
 	stdout        io.Writer
 
-	bridgeMu                  sync.Mutex
-	activeSkillBridgeID       string
-	activeSkillBridgeToolKeys map[string]struct{}
+	bridgeMu            sync.Mutex
+	bridgeSessions      map[string]bridgeSessionState
+	bridgeSessionTurns  map[string]int
+	bridgeToolRefCounts map[string]int
 }
 
 func NewRunner(opts Options) *Runner {

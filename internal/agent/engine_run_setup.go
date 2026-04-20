@@ -32,7 +32,7 @@ func (e *defaultEngine) prepareRunPrompt(sess *session.Session, input RunPromptI
 	}
 
 	activeSkill := runner.resolveActiveSkill(sess)
-	if err := runner.syncActiveSkillBridges(activeSkill); err != nil {
+	if err := runner.syncActiveSkillBridges(sess, activeSkill); err != nil {
 		return runPromptSetup{}, err
 	}
 	allowedTools, deniedTools, err := resolveSkillToolSets(activeSkill, runner.registry)

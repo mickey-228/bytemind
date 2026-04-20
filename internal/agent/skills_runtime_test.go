@@ -121,3 +121,37 @@ func TestResolveSkillToolSetsFallsBackWithoutBridgeBindings(t *testing.T) {
 		t.Fatalf("expected read_file in allow set, got %#v", allow)
 	}
 }
+
+func TestResolveSkillToolSetsDenylistIncludesOriginalAndStableKeys(t *testing.T) {
+	registry := &toolspkg.Registry{}
+	if err := registry.Register(skillRuntimeTestTool{name: "skill:skill_review:open_doc"}, toolspkg.RegisterOptions{
+		Source:       toolspkg.RegistrationSourceExtension,
+		ExtensionID:  "skill.review",
+		OriginalName: "open_doc",
+	}); err != nil {
+		t.Fatalf("register extension tool failed: %v", err)
+	}
+
+	active := &activeSkillRuntime{
+		Skill: skillspkg.Skill{
+			Name: "review",
+			ToolPolicy: skillspkg.ToolPolicy{
+				Policy: skillspkg.ToolPolicyDenylist,
+				Items:  []string{"open_doc"},
+			},
+		},
+	}
+	allow, deny, err := resolveSkillToolSets(active, registry)
+	if err != nil {
+		t.Fatalf("resolveSkillToolSets failed: %v", err)
+	}
+	if allow != nil {
+		t.Fatalf("expected nil allow set for denylist, got %#v", allow)
+	}
+	if _, ok := deny["skill:skill_review:open_doc"]; !ok {
+		t.Fatalf("expected stable key in deny set, got %#v", deny)
+	}
+	if _, ok := deny["open_doc"]; !ok {
+		t.Fatalf("expected original key in deny set, got %#v", deny)
+	}
+}

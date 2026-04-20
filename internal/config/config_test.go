@@ -664,6 +664,175 @@ func TestUpsertProviderFieldRejectsUnsupportedField(t *testing.T) {
 	}
 }
 
+func TestLoadNormalizesWritableRootsFromConfig(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	external := filepath.Join(t.TempDir(), "external-root")
+	if err := writeConfig(projectConfigPath(workspace), map[string]any{
+		"provider":       minimalProviderConfigDoc("gpt-5.4-mini", "test-key"),
+		"writable_roots": []any{"sandbox-output", external, "sandbox-output", "  "},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.WritableRoots) != 2 {
+		t.Fatalf("expected two normalized writable roots, got %#v", cfg.WritableRoots)
+	}
+
+	expectedA := filepath.Clean(filepath.Join(workspace, "sandbox-output"))
+	expectedB := filepath.Clean(external)
+	got := map[string]struct{}{}
+	for _, root := range cfg.WritableRoots {
+		got[normalizePathKey(root)] = struct{}{}
+	}
+	if _, ok := got[normalizePathKey(expectedA)]; !ok {
+		t.Fatalf("expected relative writable root %q to be normalized into config, got %#v", expectedA, cfg.WritableRoots)
+	}
+	if _, ok := got[normalizePathKey(expectedB)]; !ok {
+		t.Fatalf("expected absolute writable root %q to be preserved, got %#v", expectedB, cfg.WritableRoots)
+	}
+}
+
+func TestLoadParsesWritableRootsFromEnv(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	t.Setenv("BYTEMIND_API_KEY", "env-key")
+	external := filepath.Join(t.TempDir(), "env-external")
+	t.Setenv("BYTEMIND_WRITABLE_ROOTS", "env-out"+string(os.PathListSeparator)+external)
+
+	cfg, err := Load(workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.WritableRoots) != 2 {
+		t.Fatalf("expected two writable roots from env, got %#v", cfg.WritableRoots)
+	}
+
+	expectedA := filepath.Clean(filepath.Join(workspace, "env-out"))
+	expectedB := filepath.Clean(external)
+	got := map[string]struct{}{}
+	for _, root := range cfg.WritableRoots {
+		got[normalizePathKey(root)] = struct{}{}
+	}
+	if _, ok := got[normalizePathKey(expectedA)]; !ok {
+		t.Fatalf("expected env relative writable root %q, got %#v", expectedA, cfg.WritableRoots)
+	}
+	if _, ok := got[normalizePathKey(expectedB)]; !ok {
+		t.Fatalf("expected env absolute writable root %q, got %#v", expectedB, cfg.WritableRoots)
+	}
+}
+
+func TestDefaultIncludesSandboxPolicyFields(t *testing.T) {
+	cfg := Default(t.TempDir())
+	if cfg.SandboxEnabled {
+		t.Fatal("expected sandbox_enabled to default to false")
+	}
+	if cfg.ExecAllowlist == nil || len(cfg.ExecAllowlist) != 0 {
+		t.Fatalf("expected empty exec_allowlist default, got %#v", cfg.ExecAllowlist)
+	}
+	if cfg.NetworkAllowlist == nil || len(cfg.NetworkAllowlist) != 0 {
+		t.Fatalf("expected empty network_allowlist default, got %#v", cfg.NetworkAllowlist)
+	}
+}
+
+func TestLoadNormalizesSandboxAllowlistsFromConfig(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	if err := writeConfig(projectConfigPath(workspace), map[string]any{
+		"provider":        minimalProviderConfigDoc("gpt-5.4-mini", "test-key"),
+		"sandbox_enabled": true,
+		"exec_allowlist": []any{
+			map[string]any{"command": "  go test  ", "args_pattern": []any{"./...", "  ", "./..."}},
+			map[string]any{"command": "go test", "args_pattern": []any{"./..."}},
+			map[string]any{"command": "python", "args_pattern": []any{"pytest", "-m"}},
+		},
+		"network_allowlist": []any{
+			map[string]any{"host": " Example.COM ", "port": 443, "scheme": " HTTPS "},
+			map[string]any{"host": "example.com", "port": 443, "scheme": "https"},
+			map[string]any{"host": "api.openai.com", "port": 443, "scheme": "https"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SandboxEnabled {
+		t.Fatal("expected sandbox_enabled=true from config")
+	}
+	if len(cfg.ExecAllowlist) != 2 {
+		t.Fatalf("expected deduplicated exec_allowlist, got %#v", cfg.ExecAllowlist)
+	}
+	if cfg.ExecAllowlist[0].Command != "go test" {
+		t.Fatalf("expected first exec rule command to be sorted as go test, got %#v", cfg.ExecAllowlist)
+	}
+	if got := strings.Join(cfg.ExecAllowlist[0].ArgsPattern, ","); got != "./..." {
+		t.Fatalf("expected normalized go test args pattern, got %q", got)
+	}
+	if cfg.ExecAllowlist[1].Command != "python" {
+		t.Fatalf("expected second exec rule command python, got %#v", cfg.ExecAllowlist)
+	}
+	if got := strings.Join(cfg.ExecAllowlist[1].ArgsPattern, ","); got != "-m,pytest" {
+		t.Fatalf("expected sorted python args pattern, got %q", got)
+	}
+
+	if len(cfg.NetworkAllowlist) != 2 {
+		t.Fatalf("expected deduplicated network_allowlist, got %#v", cfg.NetworkAllowlist)
+	}
+	if cfg.NetworkAllowlist[0].Host != "api.openai.com" || cfg.NetworkAllowlist[0].Port != 443 || cfg.NetworkAllowlist[0].Scheme != "https" {
+		t.Fatalf("unexpected first normalized network rule: %#v", cfg.NetworkAllowlist[0])
+	}
+	if cfg.NetworkAllowlist[1].Host != "example.com" || cfg.NetworkAllowlist[1].Port != 443 || cfg.NetworkAllowlist[1].Scheme != "https" {
+		t.Fatalf("unexpected second normalized network rule: %#v", cfg.NetworkAllowlist[1])
+	}
+}
+
+func TestLoadRejectsInvalidExecAllowlistRule(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	if err := writeConfig(projectConfigPath(workspace), map[string]any{
+		"provider": minimalProviderConfigDoc("gpt-5.4-mini", "test-key"),
+		"exec_allowlist": []any{
+			map[string]any{"command": "   ", "args_pattern": []any{"./..."}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(workspace, "")
+	if err == nil {
+		t.Fatal("expected invalid exec_allowlist error")
+	}
+	if !strings.Contains(err.Error(), "exec_allowlist.command cannot be empty") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadRejectsInvalidNetworkAllowlistRule(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	if err := writeConfig(projectConfigPath(workspace), map[string]any{
+		"provider": minimalProviderConfigDoc("gpt-5.4-mini", "test-key"),
+		"network_allowlist": []any{
+			map[string]any{"host": "example.com", "port": 70000, "scheme": "https"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(workspace, "")
+	if err == nil {
+		t.Fatal("expected invalid network_allowlist error")
+	}
+	if !strings.Contains(err.Error(), "network_allowlist.port must be between 1 and 65535") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func writeConfig(path string, cfg map[string]any) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {

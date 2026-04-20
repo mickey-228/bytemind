@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -206,6 +208,7 @@ func runtimeRequestForTool(toolName string, raw json.RawMessage) (sandboxpkg.Run
 			ToolName: command,
 			Command:  command,
 			Args:     append([]string(nil), parts[1:]...),
+			Network:  extractRunShellNetworkTarget(parts),
 		}, nil
 	case "read_file":
 		var args struct {
@@ -241,6 +244,106 @@ func runtimeRequestForTool(toolName string, raw json.RawMessage) (sandboxpkg.Run
 		return sandboxpkg.RuntimeRequest{
 			ToolName: strings.TrimSpace(toolName),
 		}, nil
+	}
+}
+
+func extractRunShellNetworkTarget(parts []string) sandboxpkg.NetworkRule {
+	if len(parts) == 0 {
+		return sandboxpkg.NetworkRule{}
+	}
+	command := normalizeShellCommandName(parts[0])
+	args := parts[1:]
+
+	var candidate string
+	switch command {
+	case "curl", "wget":
+		candidate = firstURLLikeToken(args)
+	case "invoke-webrequest", "iwr", "invoke-restmethod", "irm":
+		candidate = findPowerShellURLArgument(args)
+	default:
+		return sandboxpkg.NetworkRule{}
+	}
+	return networkRuleFromURL(candidate)
+}
+
+func normalizeShellCommandName(raw string) string {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return ""
+	}
+	name = strings.ToLower(filepath.Base(name))
+	return strings.TrimSuffix(name, ".exe")
+}
+
+func firstURLLikeToken(args []string) string {
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg == "" {
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if rule := networkRuleFromURL(arg); rule.Host != "" {
+			return arg
+		}
+	}
+	return ""
+}
+
+func findPowerShellURLArgument(args []string) string {
+	for i := 0; i < len(args); i++ {
+		flag := strings.ToLower(strings.TrimSpace(args[i]))
+		switch flag {
+		case "-uri", "--uri", "-url", "--url":
+			if i+1 < len(args) {
+				return strings.TrimSpace(args[i+1])
+			}
+			return ""
+		}
+	}
+	return firstURLLikeToken(args)
+}
+
+func networkRuleFromURL(raw string) sandboxpkg.NetworkRule {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return sandboxpkg.NetworkRule{}
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return sandboxpkg.NetworkRule{}
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if host == "" {
+		return sandboxpkg.NetworkRule{}
+	}
+	port := 0
+	switch scheme {
+	case "https":
+		port = 443
+	case "http":
+		port = 80
+	default:
+		return sandboxpkg.NetworkRule{}
+	}
+	if parsed.Port() != "" {
+		if parsedPort := strings.TrimSpace(parsed.Port()); parsedPort != "" {
+			switch parsedPort {
+			case "80":
+				port = 80
+			case "443":
+				port = 443
+			default:
+				return sandboxpkg.NetworkRule{}
+			}
+		}
+	}
+	return sandboxpkg.NetworkRule{
+		Host:   host,
+		Port:   port,
+		Scheme: scheme,
 	}
 }
 

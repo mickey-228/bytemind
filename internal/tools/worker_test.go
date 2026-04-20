@@ -310,6 +310,43 @@ func TestInProcessWorkerDeniesWriteFileOutsideLeaseScope(t *testing.T) {
 	}
 }
 
+func TestInProcessWorkerDeniesRunShellNetworkOutsideLeaseAllowlist(t *testing.T) {
+	registry := &Registry{}
+	registerBuiltinExecutorTool(t, registry, executorTestTool{
+		name: "run_shell",
+		run: func(_ context.Context, _ json.RawMessage, _ *ExecutionContext) (string, error) {
+			t.Fatal("tool should not run when network target is outside lease allowlist")
+			return "", nil
+		},
+	})
+	worker := inProcessWorker{registry: registry}
+	_, err := worker.Run(context.Background(), workerRunRequest{
+		ToolName: "run_shell",
+		RawArgs:  json.RawMessage(`{"command":"curl https://example.org/data"}`),
+		Execution: &ExecutionContext{
+			SandboxEnabled: true,
+			Workspace:      t.TempDir(),
+			ApprovalPolicy: "never",
+			ExecAllowlist: []sandboxpkg.ExecRule{
+				{Command: "curl", ArgsPattern: []string{"https://example.org/data"}},
+			},
+			NetworkAllowlist: []sandboxpkg.NetworkRule{
+				{Host: "api.openai.com", Port: 443, Scheme: "https"},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected network allowlist denial")
+	}
+	execErr, ok := AsToolExecError(err)
+	if !ok || execErr.Code != ToolErrorPermissionDenied {
+		t.Fatalf("expected permission denied tool error, got %#v", err)
+	}
+	if !strings.Contains(execErr.Message, "network_not_allowed") {
+		t.Fatalf("expected network_not_allowed reason, got %q", execErr.Message)
+	}
+}
+
 func TestInProcessWorkerRejectsMissingRegistry(t *testing.T) {
 	worker := inProcessWorker{}
 	_, err := worker.Run(context.Background(), workerRunRequest{
@@ -382,6 +419,36 @@ func TestRuntimeRequestForRunShellKeepsQuotedArgumentsInOrder(t *testing.T) {
 func TestRuntimeRequestForRunShellRejectsEmptyCommand(t *testing.T) {
 	if _, err := runtimeRequestForTool("run_shell", json.RawMessage(`{"command":"   "}`)); err == nil {
 		t.Fatal("expected run_shell empty command error")
+	}
+}
+
+func TestRuntimeRequestForRunShellExtractsCurlNetworkTarget(t *testing.T) {
+	req, err := runtimeRequestForTool("run_shell", json.RawMessage(`{"command":"curl https://api.openai.com/v1/models"}`))
+	if err != nil {
+		t.Fatalf("runtime request: %v", err)
+	}
+	if req.Network.Host != "api.openai.com" || req.Network.Scheme != "https" || req.Network.Port != 443 {
+		t.Fatalf("expected https api.openai.com:443 network target, got %#v", req.Network)
+	}
+}
+
+func TestRuntimeRequestForRunShellExtractsPowerShellUriTarget(t *testing.T) {
+	req, err := runtimeRequestForTool("run_shell", json.RawMessage(`{"command":"iwr -UseBasicParsing -Uri http://example.org:80/path"}`))
+	if err != nil {
+		t.Fatalf("runtime request: %v", err)
+	}
+	if req.Network.Host != "example.org" || req.Network.Scheme != "http" || req.Network.Port != 80 {
+		t.Fatalf("expected http example.org:80 network target, got %#v", req.Network)
+	}
+}
+
+func TestRuntimeRequestForRunShellIgnoresNonNetworkCommand(t *testing.T) {
+	req, err := runtimeRequestForTool("run_shell", json.RawMessage(`{"command":"go test ./..."}`))
+	if err != nil {
+		t.Fatalf("runtime request: %v", err)
+	}
+	if req.Network.Host != "" || req.Network.Scheme != "" || req.Network.Port != 0 {
+		t.Fatalf("expected empty network target for local command, got %#v", req.Network)
 	}
 }
 

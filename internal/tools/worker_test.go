@@ -360,6 +360,31 @@ func TestRuntimeRequestForReadFileValidationBranches(t *testing.T) {
 	}
 }
 
+func TestRuntimeRequestForRunShellKeepsQuotedArgumentsInOrder(t *testing.T) {
+	req, err := runtimeRequestForTool("run_shell", json.RawMessage(`{"command":"deploy --to \"prod env\" --region cn"}`))
+	if err != nil {
+		t.Fatalf("runtime request: %v", err)
+	}
+	if req.Command != "deploy" {
+		t.Fatalf("expected command deploy, got %q", req.Command)
+	}
+	if len(req.Args) != 4 {
+		t.Fatalf("expected 4 args, got %#v", req.Args)
+	}
+	expected := []string{"--to", "prod env", "--region", "cn"}
+	for i := range expected {
+		if req.Args[i] != expected[i] {
+			t.Fatalf("expected arg[%d]=%q, got %q", i, expected[i], req.Args[i])
+		}
+	}
+}
+
+func TestRuntimeRequestForRunShellRejectsEmptyCommand(t *testing.T) {
+	if _, err := runtimeRequestForTool("run_shell", json.RawMessage(`{"command":"   "}`)); err == nil {
+		t.Fatal("expected run_shell empty command error")
+	}
+}
+
 func TestCloneKeyringHandlesEmptyAndBlankKids(t *testing.T) {
 	if got := cloneKeyring(nil); got != nil {
 		t.Fatalf("expected nil clone for nil keyring, got %#v", got)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode"
 
 	sandboxpkg "bytemind/internal/sandbox"
 )
@@ -193,14 +194,18 @@ func runtimeRequestForTool(toolName string, raw json.RawMessage) (sandboxpkg.Run
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return sandboxpkg.RuntimeRequest{}, err
 		}
-		parts := strings.Fields(strings.TrimSpace(args.Command))
+		parts := splitShellCommandFields(args.Command)
 		if len(parts) == 0 {
 			return sandboxpkg.RuntimeRequest{}, fmt.Errorf("command cannot be empty")
 		}
+		command := strings.TrimSpace(parts[0])
+		if command == "" {
+			return sandboxpkg.RuntimeRequest{}, fmt.Errorf("command cannot be empty")
+		}
 		return sandboxpkg.RuntimeRequest{
-			ToolName: parts[0],
-			Command:  parts[0],
-			Args:     parts[1:],
+			ToolName: command,
+			Command:  command,
+			Args:     append([]string(nil), parts[1:]...),
 		}, nil
 	case "read_file":
 		var args struct {
@@ -237,6 +242,48 @@ func runtimeRequestForTool(toolName string, raw json.RawMessage) (sandboxpkg.Run
 			ToolName: strings.TrimSpace(toolName),
 		}, nil
 	}
+}
+
+func splitShellCommandFields(command string) []string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil
+	}
+	fields := make([]string, 0, 8)
+	var builder strings.Builder
+	inSingle := false
+	inDouble := false
+
+	flush := func() {
+		if builder.Len() == 0 {
+			return
+		}
+		fields = append(fields, builder.String())
+		builder.Reset()
+	}
+
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		switch ch {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+				continue
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+				continue
+			}
+		}
+		if !inSingle && !inDouble && unicode.IsSpace(rune(ch)) {
+			flush()
+			continue
+		}
+		builder.WriteByte(ch)
+	}
+	flush()
+	return fields
 }
 
 func formatBrokerDeniedMessage(toolName string, decision sandboxpkg.DecisionResult) string {

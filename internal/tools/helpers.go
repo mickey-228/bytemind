@@ -2,7 +2,7 @@ package tools
 
 import (
 	"encoding/json"
-	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,7 +17,7 @@ const (
 	defaultSearchTextMaxFileBytes = 1 * 1024 * 1024
 )
 
-func resolvePath(workspace, input string) (string, error) {
+func resolvePath(workspace, input string, writableRoots ...string) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return workspace, nil
 	}
@@ -35,15 +35,71 @@ func resolvePath(workspace, input string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	absWorkspace = filepath.Clean(absWorkspace)
 
-	rel, err := filepath.Rel(absWorkspace, absCandidate)
+	allowedRoots, err := resolveAllowedRoots(absWorkspace, writableRoots)
 	if err != nil {
 		return "", err
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", errors.New("path escapes workspace")
+
+	for _, root := range allowedRoots {
+		if isPathWithinRoot(root, absCandidate) {
+			return absCandidate, nil
+		}
 	}
-	return absCandidate, nil
+	return "", fmt.Errorf("permission denied: path %q escapes workspace and writable_roots", input)
+}
+
+func resolveAllowedRoots(absWorkspace string, writableRoots []string) ([]string, error) {
+	roots := make([]string, 0, len(writableRoots)+1)
+	roots = append(roots, absWorkspace)
+	for _, root := range writableRoots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		absRoot, err := filepath.Abs(root)
+		if err != nil {
+			return nil, err
+		}
+		absRoot = filepath.Clean(absRoot)
+		if absRoot == absWorkspace {
+			continue
+		}
+		roots = append(roots, absRoot)
+	}
+	return roots, nil
+}
+
+func isPathWithinRoot(root, candidate string) bool {
+	root = filepath.Clean(strings.TrimSpace(root))
+	candidate = filepath.Clean(strings.TrimSpace(candidate))
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false
+	}
+	return true
+}
+
+func writableRootsFromExecContext(execCtx *ExecutionContext) []string {
+	if execCtx == nil || len(execCtx.WritableRoots) == 0 {
+		return nil
+	}
+	roots := make([]string, 0, len(execCtx.WritableRoots))
+	for _, root := range execCtx.WritableRoots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		roots = append(roots, root)
+	}
+	return roots
 }
 
 func isText(data []byte) bool {
@@ -77,6 +133,9 @@ func mustRel(workspace, path string) string {
 	}
 	if rel == "." {
 		return "."
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return path
 	}
 	return rel
 }

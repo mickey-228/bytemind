@@ -248,11 +248,23 @@ func runtimeRequestForTool(toolName string, raw json.RawMessage) (sandboxpkg.Run
 }
 
 func extractRunShellNetworkTarget(parts []string) sandboxpkg.NetworkRule {
+	return extractRunShellNetworkTargetWithDepth(parts, 0)
+}
+
+func extractRunShellNetworkTargetWithDepth(parts []string, depth int) sandboxpkg.NetworkRule {
 	if len(parts) == 0 {
+		return sandboxpkg.NetworkRule{}
+	}
+	if depth >= 3 {
 		return sandboxpkg.NetworkRule{}
 	}
 	command := normalizeShellCommandName(parts[0])
 	args := parts[1:]
+	if nested := extractNestedShellCommand(command, args); nested != "" {
+		if nestedRule := extractRunShellNetworkTargetWithDepth(splitShellCommandFields(nested), depth+1); nestedRule.Host != "" {
+			return nestedRule
+		}
+	}
 
 	var candidate string
 	switch command {
@@ -264,6 +276,68 @@ func extractRunShellNetworkTarget(parts []string) sandboxpkg.NetworkRule {
 		return sandboxpkg.NetworkRule{}
 	}
 	return networkRuleFromURL(candidate)
+}
+
+func extractNestedShellCommand(command string, args []string) string {
+	switch command {
+	case "sh", "bash", "zsh", "ksh", "dash":
+		return shellCommandAfterFlag(args)
+	case "cmd":
+		return argumentAfterFlag(args, "/c", "/k")
+	case "powershell", "pwsh":
+		return argumentAfterFlag(args, "-command", "/command", "-c", "/c")
+	default:
+		return ""
+	}
+}
+
+func shellCommandAfterFlag(args []string) string {
+	for i := 0; i < len(args); i++ {
+		flag := strings.ToLower(strings.TrimSpace(args[i]))
+		if flag == "-c" {
+			if i+1 < len(args) {
+				return strings.TrimSpace(args[i+1])
+			}
+			return ""
+		}
+		if strings.HasPrefix(flag, "-") && len(flag) > 2 {
+			compact := strings.TrimPrefix(flag, "-")
+			if isAlphaOnly(compact) && strings.Contains(compact, "c") {
+				if i+1 < len(args) {
+					return strings.TrimSpace(args[i+1])
+				}
+				return ""
+			}
+		}
+	}
+	return ""
+}
+
+func isAlphaOnly(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
+}
+
+func argumentAfterFlag(args []string, flags ...string) string {
+	for i := 0; i < len(args); i++ {
+		flag := strings.ToLower(strings.TrimSpace(args[i]))
+		for _, target := range flags {
+			if flag == target {
+				if i+1 < len(args) {
+					return strings.TrimSpace(args[i+1])
+				}
+				return ""
+			}
+		}
+	}
+	return ""
 }
 
 func normalizeShellCommandName(raw string) string {

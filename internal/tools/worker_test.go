@@ -347,6 +347,43 @@ func TestInProcessWorkerDeniesRunShellNetworkOutsideLeaseAllowlist(t *testing.T)
 	}
 }
 
+func TestInProcessWorkerDeniesRunShellNestedNetworkOutsideLeaseAllowlist(t *testing.T) {
+	registry := &Registry{}
+	registerBuiltinExecutorTool(t, registry, executorTestTool{
+		name: "run_shell",
+		run: func(_ context.Context, _ json.RawMessage, _ *ExecutionContext) (string, error) {
+			t.Fatal("tool should not run when nested shell network target is outside lease allowlist")
+			return "", nil
+		},
+	})
+	worker := inProcessWorker{registry: registry}
+	_, err := worker.Run(context.Background(), workerRunRequest{
+		ToolName: "run_shell",
+		RawArgs:  json.RawMessage(`{"command":"sh -lc \"curl https://example.org/data\""}`),
+		Execution: &ExecutionContext{
+			SandboxEnabled: true,
+			Workspace:      t.TempDir(),
+			ApprovalPolicy: "never",
+			ExecAllowlist: []sandboxpkg.ExecRule{
+				{Command: "sh", ArgsPattern: []string{"-lc", "curl https://example.org/data"}},
+			},
+			NetworkAllowlist: []sandboxpkg.NetworkRule{
+				{Host: "api.openai.com", Port: 443, Scheme: "https"},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected nested network allowlist denial")
+	}
+	execErr, ok := AsToolExecError(err)
+	if !ok || execErr.Code != ToolErrorPermissionDenied {
+		t.Fatalf("expected permission denied tool error, got %#v", err)
+	}
+	if !strings.Contains(execErr.Message, "network_not_allowed") {
+		t.Fatalf("expected network_not_allowed reason, got %q", execErr.Message)
+	}
+}
+
 func TestInProcessWorkerRejectsMissingRegistry(t *testing.T) {
 	worker := inProcessWorker{}
 	_, err := worker.Run(context.Background(), workerRunRequest{
@@ -439,6 +476,26 @@ func TestRuntimeRequestForRunShellExtractsPowerShellUriTarget(t *testing.T) {
 	}
 	if req.Network.Host != "example.org" || req.Network.Scheme != "http" || req.Network.Port != 80 {
 		t.Fatalf("expected http example.org:80 network target, got %#v", req.Network)
+	}
+}
+
+func TestRuntimeRequestForRunShellExtractsNestedShellTarget(t *testing.T) {
+	req, err := runtimeRequestForTool("run_shell", json.RawMessage(`{"command":"sh -lc \"curl https://api.openai.com/v1/models\""}`))
+	if err != nil {
+		t.Fatalf("runtime request: %v", err)
+	}
+	if req.Network.Host != "api.openai.com" || req.Network.Scheme != "https" || req.Network.Port != 443 {
+		t.Fatalf("expected nested https api.openai.com:443 target, got %#v", req.Network)
+	}
+}
+
+func TestRuntimeRequestForRunShellExtractsNestedPowerShellTarget(t *testing.T) {
+	req, err := runtimeRequestForTool("run_shell", json.RawMessage(`{"command":"powershell -NoProfile -Command \"iwr -Uri https://example.org/api\""}`))
+	if err != nil {
+		t.Fatalf("runtime request: %v", err)
+	}
+	if req.Network.Host != "example.org" || req.Network.Scheme != "https" || req.Network.Port != 443 {
+		t.Fatalf("expected nested powershell https target, got %#v", req.Network)
 	}
 }
 

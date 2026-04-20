@@ -546,6 +546,62 @@ func TestDiscoverOneRejectsMissingDirectory(t *testing.T) {
 	}
 }
 
+func TestDiscoverOneIgnoresBrokenSibling(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	good := filepath.Join(project, "good")
+	bad := filepath.Join(project, "bad")
+	if err := os.MkdirAll(good, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(good, "skill.json"), []byte(`{"name":"good","description":"ok"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(good, "SKILL.md"), []byte("# /good"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "skill.json"), []byte(`{"name":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManagerWithDirs(root, filepath.Join(root, "builtin"), filepath.Join(root, "user"), project)
+	item, err := mgr.(*extensionManager).discoverOne(good)
+	if err != nil {
+		t.Fatalf("discoverOne should ignore broken sibling, got %v", err)
+	}
+	if item.ID != "skill.good" {
+		t.Fatalf("unexpected discovered extension id: %q", item.ID)
+	}
+}
+
+func TestDiscoverOneRejectsInvalidManifestInTargetDir(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	bad := filepath.Join(project, "bad")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "skill.json"), []byte(`{"name":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManagerWithDirs(root, filepath.Join(root, "builtin"), filepath.Join(root, "user"), project)
+	_, err := mgr.(*extensionManager).discoverOne(bad)
+	if err == nil {
+		t.Fatal("expected invalid manifest error")
+	}
+	var extErr *ExtensionError
+	if !errors.As(err, &extErr) {
+		t.Fatalf("expected ExtensionError, got %T", err)
+	}
+	if extErr.Code != ErrCodeInvalidManifest {
+		t.Fatalf("unexpected code: %s", extErr.Code)
+	}
+}
+
 func TestReloadCollectsSkillDiagnosticsAsDiscoveryErrors(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "project")

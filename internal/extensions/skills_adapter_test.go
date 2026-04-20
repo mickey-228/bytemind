@@ -1,6 +1,7 @@
 package extensions
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -54,4 +55,41 @@ func TestSkillAdapterFromSkillMarksManifestOnlyAsDegraded(t *testing.T) {
 	if item.Health.Status != ExtensionStatusDegraded {
 		t.Fatalf("expected degraded health, got %q", item.Health.Status)
 	}
+}
+
+func TestSkillAdapterSyncConcurrentDoesNotPanic(t *testing.T) {
+	adapter := newSkillAdapter()
+	now := time.Now().UTC()
+	catalogs := []skillspkg.Catalog{
+		{
+			Skills: []skillspkg.Skill{{
+				Name:         "review",
+				Title:        "review",
+				Scope:        skillspkg.ScopeProject,
+				SourceDir:    `C:\\repo\\.bytemind\\skills\\review`,
+				DiscoveredAt: now,
+			}},
+		},
+		{
+			Skills: []skillspkg.Skill{{
+				Name:         "lint",
+				Title:        "lint",
+				Scope:        skillspkg.ScopeProject,
+				SourceDir:    `C:\\repo\\.bytemind\\skills\\lint`,
+				DiscoveredAt: now.Add(1 * time.Second),
+			}},
+		},
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		for _, catalog := range catalogs {
+			wg.Add(1)
+			go func(c skillspkg.Catalog) {
+				defer wg.Done()
+				_ = adapter.Sync(c)
+			}(catalog)
+		}
+	}
+	wg.Wait()
 }

@@ -2,6 +2,7 @@ package extensions
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -317,21 +318,11 @@ func (m *extensionManager) discoverOne(source string) (ExtensionInfo, error) {
 	if !ok {
 		scope = ExtensionScopeRemote
 	}
-	catalog := skillspkg.NewManagerWithDirs(m.workspace, "", "", filepath.Dir(resolved)).Reload()
-	var matched skillspkg.Skill
-	for _, skill := range catalog.Skills {
-		if sameExtensionSource(skill.SourceDir, resolved) {
-			matched = skill
-			break
-		}
+	skill, err := discoverSkillFromDir(resolved, extensionScopeToSkillScope(scope))
+	if err != nil {
+		return ExtensionInfo{}, err
 	}
-	if strings.TrimSpace(matched.Name) == "" {
-		if len(catalog.Diagnostics) > 0 {
-			return ExtensionInfo{}, wrapError(ErrCodeInvalidManifest, catalog.Diagnostics[0].Message, nil)
-		}
-		return ExtensionInfo{}, wrapError(ErrCodeInvalidSource, "extension source does not contain a supported extension", nil)
-	}
-	item := m.adapter.FromSkill(matched)
+	item := m.adapter.FromSkill(skill)
 	item.Source.Scope = scope
 	item.Source.Ref = resolved
 	item.Manifest.Source.Scope = scope
@@ -400,4 +391,198 @@ func fileExists(path string) bool {
 
 func sameExtensionSource(left, right string) bool {
 	return filepath.Clean(strings.TrimSpace(left)) == filepath.Clean(strings.TrimSpace(right))
+}
+
+type discoverSkillManifest struct {
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Entry       struct {
+		Slash string `json:"slash"`
+	} `json:"entry"`
+	Prompts []struct {
+		ID   string `json:"id"`
+		Path string `json:"path"`
+	} `json:"prompts"`
+	Resources []struct {
+		ID       string `json:"id"`
+		URI      string `json:"uri"`
+		Optional bool   `json:"optional"`
+	} `json:"resources"`
+	Tools struct {
+		Policy string   `json:"policy"`
+		Items  []string `json:"items"`
+	} `json:"tools"`
+	Args []struct {
+		Name        string `json:"name"`
+		Type        string `json:"type"`
+		Required    bool   `json:"required"`
+		Description string `json:"description"`
+		Default     string `json:"default"`
+	} `json:"args"`
+}
+
+func discoverSkillFromDir(dir string, scope skillspkg.Scope) (skillspkg.Skill, error) {
+	manifestPath := filepath.Join(dir, "skill.json")
+	if !fileExists(manifestPath) {
+		return skillspkg.Skill{}, wrapError(ErrCodeInvalidSource, "extension source does not contain skill.json", nil)
+	}
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return skillspkg.Skill{}, wrapError(ErrCodeInvalidManifest, "failed to read skill.json", err)
+	}
+
+	var manifest discoverSkillManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return skillspkg.Skill{}, wrapError(ErrCodeInvalidManifest, "invalid skill.json", err)
+	}
+
+	name := strings.TrimSpace(manifest.Name)
+	if name == "" {
+		return skillspkg.Skill{}, wrapError(ErrCodeInvalidExtension, "skill.json name is required", nil)
+	}
+
+	title := strings.TrimSpace(manifest.Title)
+	if title == "" {
+		title = name
+	}
+	description := strings.TrimSpace(manifest.Description)
+	if description == "" {
+		description = "No description provided."
+	}
+
+	instruction := ""
+	skillPath := filepath.Join(dir, "SKILL.md")
+	if fileExists(skillPath) {
+		skillData, err := os.ReadFile(skillPath)
+		if err != nil {
+			return skillspkg.Skill{}, wrapError(ErrCodeInvalidManifest, "failed to read SKILL.md", err)
+		}
+		instruction = strings.TrimSpace(string(skillData))
+	}
+
+	entrySlash := strings.TrimSpace(manifest.Entry.Slash)
+	if entrySlash == "" {
+		entrySlash = "/" + name
+	} else if !strings.HasPrefix(entrySlash, "/") {
+		entrySlash = "/" + entrySlash
+	}
+
+	prompts := make([]skillspkg.PromptRef, 0, len(manifest.Prompts))
+	for _, prompt := range manifest.Prompts {
+		id := strings.TrimSpace(prompt.ID)
+		path := strings.TrimSpace(prompt.Path)
+		if id == "" && path == "" {
+			continue
+		}
+		prompts = append(prompts, skillspkg.PromptRef{ID: id, Path: path})
+	}
+
+	resources := make([]skillspkg.ResourceRef, 0, len(manifest.Resources))
+	for _, resource := range manifest.Resources {
+		id := strings.TrimSpace(resource.ID)
+		uri := strings.TrimSpace(resource.URI)
+		if id == "" && uri == "" {
+			continue
+		}
+		resources = append(resources, skillspkg.ResourceRef{
+			ID:       id,
+			URI:      uri,
+			Optional: resource.Optional,
+		})
+	}
+
+	args := make([]skillspkg.Arg, 0, len(manifest.Args))
+	for _, arg := range manifest.Args {
+		name := strings.TrimSpace(arg.Name)
+		if name == "" {
+			continue
+		}
+		args = append(args, skillspkg.Arg{
+			Name:        name,
+			Type:        strings.TrimSpace(arg.Type),
+			Required:    arg.Required,
+			Description: strings.TrimSpace(arg.Description),
+			Default:     strings.TrimSpace(arg.Default),
+		})
+	}
+
+	aliases := uniqueExtensionStrings([]string{
+		name,
+		filepath.Base(dir),
+		entrySlash,
+		strings.TrimPrefix(entrySlash, "/"),
+	})
+
+	return skillspkg.Skill{
+		Name:         name,
+		Version:      strings.TrimSpace(manifest.Version),
+		Title:        title,
+		Description:  description,
+		Scope:        scope,
+		SourceDir:    dir,
+		Instruction:  instruction,
+		Entry:        skillspkg.Entry{Slash: entrySlash},
+		Prompts:      prompts,
+		Resources:    resources,
+		ToolPolicy:   discoverToolPolicy(manifest.Tools.Policy, manifest.Tools.Items),
+		Args:         args,
+		Aliases:      aliases,
+		DiscoveredAt: time.Now().UTC(),
+	}, nil
+}
+
+func discoverToolPolicy(policy string, items []string) skillspkg.ToolPolicy {
+	policy = strings.TrimSpace(strings.ToLower(policy))
+	cleanItems := uniqueExtensionStrings(items)
+	if policy == "" {
+		return skillspkg.ToolPolicy{
+			Policy: skillspkg.ToolPolicyInherit,
+			Items:  cleanItems,
+		}
+	}
+	switch skillspkg.ToolPolicyMode(policy) {
+	case skillspkg.ToolPolicyInherit, skillspkg.ToolPolicyAllowlist, skillspkg.ToolPolicyDenylist:
+		return skillspkg.ToolPolicy{
+			Policy: skillspkg.ToolPolicyMode(policy),
+			Items:  cleanItems,
+		}
+	default:
+		return skillspkg.ToolPolicy{
+			Policy: skillspkg.ToolPolicyInherit,
+			Items:  cleanItems,
+		}
+	}
+}
+
+func extensionScopeToSkillScope(scope ExtensionScope) skillspkg.Scope {
+	switch scope {
+	case ExtensionScopeBuiltin:
+		return skillspkg.ScopeBuiltin
+	case ExtensionScopeUser:
+		return skillspkg.ScopeUser
+	default:
+		return skillspkg.ScopeProject
+	}
+}
+
+func uniqueExtensionStrings(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(items))
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		result = append(result, item)
+	}
+	return result
 }

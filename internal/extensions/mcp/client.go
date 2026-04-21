@@ -53,6 +53,18 @@ type ServerConfig struct {
 	CWD              string
 	StartupTimeout   time.Duration
 	CallTimeout      time.Duration
+	MaxConcurrency   int
+	ToolOverrides    map[string]ToolOverride
+}
+
+type ToolOverride struct {
+	SafetyClass     string
+	ReadOnly        *bool
+	Destructive     *bool
+	AllowedModes    []string
+	DefaultTimeoutS int
+	MaxTimeoutS     int
+	MaxResultChars  int
 }
 
 type ToolDescriptor struct {
@@ -393,11 +405,15 @@ func normalizeServerConfig(cfg ServerConfig) ServerConfig {
 	if cfg.CallTimeout <= 0 {
 		cfg.CallTimeout = defaultCallTimeout
 	}
+	if cfg.MaxConcurrency <= 0 {
+		cfg.MaxConcurrency = 4
+	}
 	if cfg.Args == nil {
 		cfg.Args = []string{}
 	}
 	cfg.ProtocolVersions = normalizeProtocolVersions(cfg.ProtocolVersion, cfg.ProtocolVersions)
 	cfg.Env = cloneStringMap(cfg.Env)
+	cfg.ToolOverrides = cloneToolOverrideMap(cfg.ToolOverrides)
 	return cfg
 }
 
@@ -754,6 +770,31 @@ func cloneStringMap(input map[string]string) map[string]string {
 	out := make(map[string]string, len(input))
 	for key, value := range input {
 		out[key] = value
+	}
+	return out
+}
+
+func cloneToolOverrideMap(input map[string]ToolOverride) map[string]ToolOverride {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]ToolOverride, len(input))
+	for key, value := range input {
+		cloned := value
+		cloned.SafetyClass = strings.TrimSpace(strings.ToLower(value.SafetyClass))
+		if value.AllowedModes != nil {
+			cloned.AllowedModes = make([]string, len(value.AllowedModes))
+			copy(cloned.AllowedModes, value.AllowedModes)
+		}
+		if value.ReadOnly != nil {
+			readonly := *value.ReadOnly
+			cloned.ReadOnly = &readonly
+		}
+		if value.Destructive != nil {
+			destructive := *value.Destructive
+			cloned.Destructive = &destructive
+		}
+		out[strings.ToLower(strings.TrimSpace(key))] = cloned
 	}
 	return out
 }

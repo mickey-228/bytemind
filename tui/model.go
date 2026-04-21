@@ -238,6 +238,8 @@ var commandItems = []commandItem{
 	{Name: "/help", Usage: "/help", Description: "Show usage and supported commands.", Kind: "command"},
 	{Name: "/session", Usage: "/session", Description: "Open the recent session list.", Kind: "command"},
 	{Name: "/skills-select", Usage: "/skills-select", Description: "Open the loaded skills picker.", Kind: "command"},
+	{Name: "/mcp list", Usage: "/mcp list", Description: "List configured MCP servers and current status.", Kind: "command"},
+	{Name: "/mcp reload", Usage: "/mcp reload", Description: "Reload MCP runtime and refresh tools.", Kind: "command"},
 	{Name: "/new", Usage: "/new", Description: "Start a fresh session in this workspace.", Kind: "command"},
 	{Name: "/compact", Usage: "/compact", Description: "Compress long session history into a continuation summary.", Kind: "command"},
 	{Name: "/btw", Usage: "/btw <message>", Description: "Interject while a run is in progress.", Kind: "command"},
@@ -249,6 +251,7 @@ var commandItems = []commandItem{
 type model struct {
 	runner     Runner
 	store      SessionStore
+	mcpService MCPService
 	sess       *session.Session
 	imageStore assets.ImageStore
 	cfg        config.Config
@@ -403,6 +406,7 @@ func newModel(opts Options) model {
 	m := model{
 		runner:               opts.Runner,
 		store:                opts.Store,
+		mcpService:           opts.MCPService,
 		sess:                 opts.Session,
 		imageStore:           opts.ImageStore,
 		cfg:                  opts.Config,
@@ -1622,7 +1626,7 @@ func shouldExecuteFromPalette(item commandItem) bool {
 		return true
 	}
 	switch item.Name {
-	case "/help", "/session", "/skills", "/skill clear", "/new", "/compact", "/quit":
+	case "/help", "/session", "/skills", "/skill clear", "/mcp list", "/mcp reload", "/new", "/compact", "/quit":
 		return true
 	default:
 		return false

@@ -281,14 +281,8 @@ var commandItems = []commandItem{
 	{Name: "/session", Usage: "/session", Description: "Open the recent session list.", Kind: "command"},
 	{Name: "/skills-select", Usage: "/skills-select", Description: "Open the loaded skills picker.", Kind: "command"},
 	{Name: "/mcp list", Usage: "/mcp list", Description: "List configured MCP servers and current status.", Kind: "command"},
+	{Name: "/mcp help", Usage: "/mcp help", Description: "Show MCP command help.", Kind: "command"},
 	{Name: "/mcp show", Usage: "/mcp show <id>", Description: "Show one MCP server config and runtime state.", Kind: "command"},
-	{Name: "/mcp-add", Usage: "/mcp-add", Description: "Add a stdio MCP server.", Kind: "command"},
-	{Name: "/mcp remove", Usage: "/mcp remove <id>", Description: "Remove one configured MCP server.", Kind: "command"},
-	{Name: "/mcp enable", Usage: "/mcp enable <id>", Description: "Enable one MCP server.", Kind: "command"},
-	{Name: "/mcp disable", Usage: "/mcp disable <id>", Description: "Disable one MCP server.", Kind: "command"},
-	{Name: "/mcp test", Usage: "/mcp test <id>", Description: "Run MCP health check for one server.", Kind: "command"},
-	{Name: "/mcp auth", Usage: "/mcp auth <id>", Description: "Show MCP credential setup guidance.", Kind: "command"},
-	{Name: "/mcp reload", Usage: "/mcp reload", Description: "Reload MCP runtime and refresh tools.", Kind: "command"},
 	{Name: "/new", Usage: "/new", Description: "Start a fresh session in this workspace.", Kind: "command"},
 	{Name: "/compact", Usage: "/compact", Description: "Compress long session history into a continuation summary.", Kind: "command"},
 	{Name: "/btw", Usage: "/btw <message>", Description: "Interject while a run is in progress.", Kind: "command"},
@@ -2164,7 +2158,7 @@ func shouldExecuteFromPalette(item commandItem) bool {
 		return true
 	}
 	switch item.Name {
-	case "/help", "/session", "/skills", "/skill clear", "/mcp list", "/mcp reload", "/new", "/compact", "/quit":
+	case "/help", "/session", "/skills", "/skill clear", "/mcp list", "/mcp help", "/new", "/compact", "/quit":
 		return true
 	default:
 		return false

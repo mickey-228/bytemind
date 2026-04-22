@@ -2528,29 +2528,24 @@ func TestCommandPaletteListsQuitCommand(t *testing.T) {
 	}
 }
 
-func TestCommandPaletteListsMCPAddAlias(t *testing.T) {
-	found := false
+func TestCommandPaletteDoesNotListMCPAddAlias(t *testing.T) {
 	for _, item := range commandItems {
-		if item.Name == "/mcp-add" && item.Kind == "command" {
-			found = true
-			break
+		if item.Name == "/mcp-add" {
+			t.Fatalf("did not expect command palette to include /mcp-add")
 		}
-	}
-	if !found {
-		t.Fatalf("expected command palette to include /mcp-add")
 	}
 }
 
-func TestCommandPaletteListsMCPAuthCommand(t *testing.T) {
+func TestCommandPaletteListsMCPHelpCommand(t *testing.T) {
 	found := false
 	for _, item := range commandItems {
-		if item.Name == "/mcp auth" && item.Kind == "command" {
+		if item.Name == "/mcp help" && item.Kind == "command" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected command palette to include /mcp auth")
+		t.Fatalf("expected command palette to include /mcp help")
 	}
 }
 

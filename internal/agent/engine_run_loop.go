@@ -22,6 +22,7 @@ func (e *defaultEngine) runPromptTurns(ctx context.Context, sess *session.Sessio
 	adaptiveState := newAdaptiveTurnState(runner.contextBudgetMaxReactiveRetry())
 	executedToolNames := make([]string, 0, 16)
 	taskReport := &TaskReport{}
+	writeSystemSandboxStartupNotice(out, setup, runner.config.SandboxEnabled, runner.config.SystemSandboxMode)
 	recordSystemSandboxStartupFallback(taskReport, setup, runner.config.SystemSandboxMode)
 	approvalHandler := runner.prepareRunApprovalHandler(setup, out)
 
@@ -157,6 +158,38 @@ func writeCompletionTaskReport(out io.Writer, taskReport *TaskReport) {
 	_, _ = io.WriteString(out, human+"\n")
 	_, _ = io.WriteString(out, "Task report (json):\n")
 	_, _ = io.WriteString(out, taskReport.JSON()+"\n")
+}
+
+func writeSystemSandboxStartupNotice(out io.Writer, setup runPromptSetup, sandboxEnabled bool, configuredMode string) {
+	if out == nil {
+		return
+	}
+	mode := strings.TrimSpace(configuredMode)
+	if mode == "" {
+		mode = "off"
+	}
+	backend := strings.TrimSpace(setup.SystemSandboxBackend)
+	if backend == "" {
+		backend = "none"
+	}
+	status := strings.TrimSpace(setup.SystemSandboxStatus)
+	if !sandboxEnabled && status == "" {
+		return
+	}
+	if mode == "off" && !setup.SystemSandboxFallback && status == "" {
+		return
+	}
+	sandboxState := "active"
+	if setup.SystemSandboxFallback {
+		sandboxState = "fallback"
+	} else if backend == "none" {
+		sandboxState = "inactive"
+	}
+	line := fmt.Sprintf("%ssystem sandbox startup%s mode=%s backend=%s state=%s", ansiDim, ansiReset, mode, backend, sandboxState)
+	if status != "" {
+		line += fmt.Sprintf(" (%s)", status)
+	}
+	_, _ = io.WriteString(out, line+"\n")
 }
 
 func recordSystemSandboxStartupFallback(taskReport *TaskReport, setup runPromptSetup, configuredMode string) {

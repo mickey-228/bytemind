@@ -1102,6 +1102,7 @@ func TestRunPromptReportsSystemSandboxStartupFallbackOnSuccess(t *testing.T) {
 		t.Fatalf("unexpected answer: %q", answer)
 	}
 	for _, want := range []string{
+		"mode=best_effort backend=none state=fallback",
 		"Task report summary:",
 		"- System sandbox fallback: startup (mode=best_effort, backend=none, reason=system sandbox best_effort fallback: test backend unavailable)",
 		"Task report (json):",

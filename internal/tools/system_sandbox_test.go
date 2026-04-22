@@ -57,3 +57,46 @@ func TestValidateSystemSandboxRuntimeWithRequiredPassesWhenBackendAvailable(t *t
 		t.Fatalf("expected required mode to pass with backend available, got %v", err)
 	}
 }
+
+func TestResolveSystemSandboxRuntimeStatusWithBestEffortFallback(t *testing.T) {
+	status, err := resolveSystemSandboxRuntimeStatusWith(true, "best_effort", "windows", func(string) (string, error) {
+		t.Fatal("lookPath should not be called for unsupported OS")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("resolve status: %v", err)
+	}
+	if status.Mode != "best_effort" {
+		t.Fatalf("expected mode best_effort, got %#v", status)
+	}
+	if !status.Fallback {
+		t.Fatalf("expected fallback=true, got %#v", status)
+	}
+	if status.BackendEnabled {
+		t.Fatalf("expected backend disabled, got %#v", status)
+	}
+	if !strings.Contains(strings.ToLower(status.Message), "fallback") {
+		t.Fatalf("expected fallback message, got %#v", status)
+	}
+}
+
+func TestResolveSystemSandboxRuntimeStatusWithRequiredBackendActive(t *testing.T) {
+	status, err := resolveSystemSandboxRuntimeStatusWith(true, "required", "linux", func(name string) (string, error) {
+		if name != "unshare" {
+			t.Fatalf("unexpected binary lookup: %q", name)
+		}
+		return "/usr/bin/unshare", nil
+	})
+	if err != nil {
+		t.Fatalf("resolve status: %v", err)
+	}
+	if !status.BackendEnabled {
+		t.Fatalf("expected backend enabled, got %#v", status)
+	}
+	if status.BackendName != "linux_unshare" {
+		t.Fatalf("expected linux_unshare backend, got %#v", status)
+	}
+	if status.Fallback {
+		t.Fatalf("expected fallback=false, got %#v", status)
+	}
+}

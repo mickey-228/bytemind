@@ -210,19 +210,59 @@ func assessShellCommand(command string) shellAssessment {
 
 func shellCommand(ctx context.Context, command string, execCtx *ExecutionContext) (*exec.Cmd, error) {
 	mode := normalizeSystemSandboxMode(execCtx)
-	backend, err := resolveSystemSandboxBackend(mode, runtime.GOOS, runShellLookPath)
+	backend, err := resolveSystemSandboxRuntimeBackend(mode, runtime.GOOS, runShellLookPath)
 	if err != nil {
 		return nil, err
 	}
+	var cmd *exec.Cmd
 	if backend.Enabled {
-		args := append(append([]string(nil), backend.ArgPrefix...), command)
-		return exec.CommandContext(ctx, backend.Runner, args...), nil
-	}
-	if runtime.GOOS == "windows" {
+		execCommand := strings.TrimSpace(command)
+		if mode == systemSandboxModeRequired && runtime.GOOS == "linux" {
+			wrapped, err := buildRequiredLinuxShellCommand(execCommand, execCtx)
+			if err != nil {
+				return nil, err
+			}
+			execCommand = wrapped
+		}
+		args := append(append([]string(nil), backend.Shell.ArgPrefix...), execCommand)
+		cmd = exec.CommandContext(ctx, backend.Runner, args...)
+	} else if runtime.GOOS == "windows" {
 		executable := resolveWindowsShellExecutable(exec.LookPath, os.Stat, os.Getenv)
-		return exec.CommandContext(ctx, executable, "-NoProfile", "-Command", command), nil
+		cmd = exec.CommandContext(ctx, executable, "-NoProfile", "-Command", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-lc", command)
 	}
-	return exec.CommandContext(ctx, "sh", "-lc", command), nil
+
+	if backend.Enabled && mode == systemSandboxModeRequired {
+		forced := map[string]string{}
+		if execCtx != nil {
+			workspace := strings.TrimSpace(execCtx.Workspace)
+			if workspace != "" {
+				forced["HOME"] = workspace
+			}
+		}
+		forced["TMPDIR"] = "/tmp"
+		cmd.Env = buildSandboxEnv(os.Environ(), sandboxEnvOptions{
+			GOOS:          runtime.GOOS,
+			RequiredMode:  true,
+			DropSensitive: true,
+			ForceSet:      forced,
+		})
+	}
+	return cmd, nil
+}
+
+func withRequiredLinuxShellLimits(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return command
+	}
+	guards := []string{
+		"ulimit -t 120 >/dev/null 2>&1 || true",
+		"ulimit -f 1048576 >/dev/null 2>&1 || true",
+		"ulimit -v 2097152 >/dev/null 2>&1 || true",
+	}
+	return strings.Join(append(guards, command), "; ")
 }
 
 type systemSandboxBackend struct {
@@ -248,30 +288,17 @@ func normalizeSystemSandboxMode(execCtx *ExecutionContext) string {
 }
 
 func resolveSystemSandboxBackend(mode, goos string, lookPath func(string) (string, error)) (systemSandboxBackend, error) {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" || mode == systemSandboxModeOff {
-		return systemSandboxBackend{}, nil
+	resolved, err := resolveSystemSandboxRuntimeBackend(mode, goos, lookPath)
+	if err != nil {
+		return systemSandboxBackend{}, err
 	}
-	if goos != "linux" {
-		if mode == systemSandboxModeRequired {
-			return systemSandboxBackend{}, fmt.Errorf("system sandbox mode required but no backend is available on %s", goos)
-		}
-		return systemSandboxBackend{}, nil
-	}
-	if lookPath == nil {
-		lookPath = exec.LookPath
-	}
-	runner, err := lookPath("unshare")
-	if err != nil || strings.TrimSpace(runner) == "" {
-		if mode == systemSandboxModeRequired {
-			return systemSandboxBackend{}, errors.New("system sandbox mode required but linux backend \"unshare\" is unavailable")
-		}
+	if !resolved.Enabled {
 		return systemSandboxBackend{}, nil
 	}
 	return systemSandboxBackend{
 		Enabled:   true,
-		Runner:    runner,
-		ArgPrefix: append(linuxSystemSandboxNamespaceArgs(), "sh", "-lc"),
+		Runner:    resolved.Runner,
+		ArgPrefix: append([]string(nil), resolved.Shell.ArgPrefix...),
 	}, nil
 }
 

@@ -21,6 +21,8 @@ func TestSystemPromptRendersMainModeSystemAndInstruction(t *testing.T) {
 		ApprovalPolicy: "on-request",
 		ApprovalMode:   "away",
 		AwayPolicy:     "fail_fast",
+		SandboxEnabled: true,
+		SystemSandbox:  "best_effort",
 		Model:          "gpt-5.4-mini",
 		Mode:           "plan",
 		Platform:       "linux/amd64",
@@ -56,6 +58,8 @@ func TestSystemPromptRendersMainModeSystemAndInstruction(t *testing.T) {
 	assertContains(t, prompt, "approval_policy: on-request")
 	assertContains(t, prompt, "approval_mode: away")
 	assertContains(t, prompt, "away_policy: fail_fast")
+	assertContains(t, prompt, "sandbox_enabled: true")
+	assertContains(t, prompt, "system_sandbox_mode: best_effort")
 	assertContains(t, prompt, "[Available Skills]")
 	assertContains(t, prompt, "Skills are reusable task profiles available in this session")
 	assertContains(t, prompt, "- review: Review code changes for regressions.")
@@ -93,6 +97,8 @@ func TestSystemPromptOmitsOptionalBlocksWhenEmpty(t *testing.T) {
 	assertContains(t, prompt, "- none")
 	assertContains(t, prompt, "approval_mode: interactive")
 	assertContains(t, prompt, "away_policy: auto_deny_continue")
+	assertContains(t, prompt, "sandbox_enabled: false")
+	assertContains(t, prompt, "system_sandbox_mode: off")
 	if strings.Contains(prompt, "[Instructions]") {
 		t.Fatalf("did not expect instruction block in prompt: %q", prompt)
 	}

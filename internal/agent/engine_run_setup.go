@@ -98,6 +98,8 @@ func (e *defaultEngine) buildTurnMessages(sess *session.Session, setup runPrompt
 			ApprovalPolicy: runner.config.ApprovalPolicy,
 			ApprovalMode:   runner.config.ApprovalMode,
 			AwayPolicy:     runner.config.AwayPolicy,
+			SandboxEnabled: runner.config.SandboxEnabled,
+			SystemSandbox:  runner.config.SystemSandboxMode,
 			Model:          runner.config.Provider.Model,
 			Mode:           setup.Mode,
 			Skills:         setup.AvailableSkills,

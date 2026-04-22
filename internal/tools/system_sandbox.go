@@ -6,10 +6,29 @@ import (
 	"strings"
 )
 
+// SystemSandboxRuntimeStatus describes system sandbox runtime state after
+// configuration and platform/backend probing are applied.
+type SystemSandboxRuntimeStatus struct {
+	SandboxEnabled bool
+	RequestedMode  string
+	Mode           string
+	GOOS           string
+	BackendEnabled bool
+	BackendName    string
+	Fallback       bool
+	Message        string
+}
+
 // ValidateSystemSandboxRuntime verifies whether the configured system sandbox mode
 // is usable in the current runtime. It is fail-closed for required mode.
 func ValidateSystemSandboxRuntime(sandboxEnabled bool, mode string) error {
 	return validateSystemSandboxRuntimeWith(sandboxEnabled, mode, runtime.GOOS, runShellLookPath)
+}
+
+// ResolveSystemSandboxRuntimeStatus reports the effective runtime status of system
+// sandbox mode under the current process OS and backend availability.
+func ResolveSystemSandboxRuntimeStatus(sandboxEnabled bool, mode string) (SystemSandboxRuntimeStatus, error) {
+	return resolveSystemSandboxRuntimeStatusWith(sandboxEnabled, mode, runtime.GOOS, runShellLookPath)
 }
 
 func validateSystemSandboxRuntimeWith(
@@ -18,15 +37,49 @@ func validateSystemSandboxRuntimeWith(
 	goos string,
 	lookPath func(string) (string, error),
 ) error {
+	_, err := resolveSystemSandboxRuntimeStatusWith(sandboxEnabled, mode, goos, lookPath)
+	return err
+}
+
+func resolveSystemSandboxRuntimeStatusWith(
+	sandboxEnabled bool,
+	mode string,
+	goos string,
+	lookPath func(string) (string, error),
+) (SystemSandboxRuntimeStatus, error) {
+	status := SystemSandboxRuntimeStatus{
+		SandboxEnabled: sandboxEnabled,
+		RequestedMode:  strings.TrimSpace(mode),
+		GOOS:           strings.TrimSpace(goos),
+	}
+	if status.GOOS == "" {
+		status.GOOS = runtime.GOOS
+	}
 	if !sandboxEnabled {
-		return nil
+		status.Mode = systemSandboxModeOff
+		status.Message = "system sandbox is disabled"
+		return status, nil
 	}
-	normalized := normalizeSystemSandboxMode(&ExecutionContext{SystemSandboxMode: mode})
-	if normalized == systemSandboxModeOff {
-		return nil
+	status.Mode = normalizeSystemSandboxMode(&ExecutionContext{SystemSandboxMode: mode})
+	if status.Mode == systemSandboxModeOff {
+		status.Message = "system sandbox mode is off"
+		return status, nil
 	}
-	if _, err := resolveSystemSandboxBackend(normalized, strings.TrimSpace(goos), lookPath); err != nil {
-		return fmt.Errorf("system sandbox backend unavailable for mode %q: %w", normalized, err)
+	backend, err := resolveSystemSandboxRuntimeBackend(status.Mode, status.GOOS, lookPath)
+	if err != nil {
+		return status, fmt.Errorf("system sandbox backend unavailable for mode %q: %w", status.Mode, err)
 	}
-	return nil
+	if backend.Enabled {
+		status.BackendEnabled = true
+		status.BackendName = strings.TrimSpace(backend.Name)
+		status.Message = fmt.Sprintf("system sandbox backend %q is active", status.BackendName)
+		return status, nil
+	}
+	if status.Mode == systemSandboxModeBestEffort {
+		status.Fallback = true
+		status.Message = fmt.Sprintf("system sandbox best_effort fallback: no backend available on %s", status.GOOS)
+		return status, nil
+	}
+	status.Message = "system sandbox backend is inactive"
+	return status, nil
 }

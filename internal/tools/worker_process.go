@@ -188,7 +188,7 @@ func (i osExecWorkerInvoker) resolveLaunch(req workerRPCRequest) (workerProcessL
 	if lookPath == nil {
 		lookPath = runShellLookPath
 	}
-	backend, err := resolveSystemSandboxBackend(mode, goos, lookPath)
+	backend, err := resolveSystemSandboxRuntimeBackend(mode, goos, lookPath)
 	if err != nil {
 		return workerProcessLaunch{}, err
 	}
@@ -197,7 +197,16 @@ func (i osExecWorkerInvoker) resolveLaunch(req workerRPCRequest) (workerProcessL
 	args := []string{executablePath, sandboxWorkerSubcommand, sandboxWorkerStdioFlag}
 	if backend.Enabled {
 		path = backend.Runner
-		backendArgs := append(linuxSystemSandboxWorkerArgs(), executablePath, sandboxWorkerSubcommand, sandboxWorkerStdioFlag)
+		backendArgs := append([]string(nil), backend.Worker.ArgPrefix...)
+		if strings.EqualFold(mode, systemSandboxModeRequired) && strings.EqualFold(goos, "linux") {
+			wrapped, wrapErr := buildRequiredLinuxWorkerCommand(executablePath, req.Execution)
+			if wrapErr != nil {
+				return workerProcessLaunch{}, wrapErr
+			}
+			backendArgs = append(backendArgs, "sh", "-lc", wrapped)
+		} else {
+			backendArgs = append(backendArgs, executablePath, sandboxWorkerSubcommand, sandboxWorkerStdioFlag)
+		}
 		args = append([]string{backend.Runner}, backendArgs...)
 	}
 
@@ -205,8 +214,25 @@ func (i osExecWorkerInvoker) resolveLaunch(req workerRPCRequest) (workerProcessL
 		Path: path,
 		Args: args,
 		Dir:  strings.TrimSpace(req.Execution.Workspace),
-		Env:  buildWorkerProcessEnv(os.Environ()),
+		Env:  buildWorkerProcessEnv(os.Environ(), mode, goos),
 	}, nil
+}
+
+func buildRequiredLinuxWorkerCommand(executablePath string, execution workerRPCExecutionContext) (string, error) {
+	executablePath = strings.TrimSpace(executablePath)
+	if executablePath == "" {
+		return "", errors.New("worker executable path is empty")
+	}
+	command := strings.Join([]string{
+		"exec",
+		shellSingleQuote(executablePath),
+		shellSingleQuote(sandboxWorkerSubcommand),
+		shellSingleQuote(sandboxWorkerStdioFlag),
+	}, " ")
+	return buildRequiredLinuxShellCommand(command, &ExecutionContext{
+		Workspace:     execution.Workspace,
+		WritableRoots: append([]string(nil), execution.WritableRoots...),
+	})
 }
 
 func RunWorkerProcess(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
@@ -408,33 +434,19 @@ func workerRunShellCommand(raw json.RawMessage) (string, error) {
 	return command, nil
 }
 
-func buildWorkerProcessEnv(base []string) []string {
-	if len(base) == 0 {
-		return []string{sandboxWorkerEnvKey + "=" + sandboxWorkerEnvValue}
-	}
-	trimmed := make([]string, 0, len(base)+1)
-	for _, kv := range base {
-		kv = strings.TrimSpace(kv)
-		if kv == "" {
-			continue
-		}
-		name, _, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue
-		}
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		upperName := strings.ToUpper(name)
-		if upperName == "BYTEMIND_API_KEY" || upperName == "BYTEMIND_PROVIDER_API_KEY" {
-			continue
-		}
-		if upperName == sandboxWorkerEnvKey {
-			continue
-		}
-		trimmed = append(trimmed, kv)
-	}
-	trimmed = append(trimmed, sandboxWorkerEnvKey+"="+sandboxWorkerEnvValue)
-	return trimmed
+func buildWorkerProcessEnv(base []string, mode, goos string) []string {
+	return buildSandboxEnv(base, sandboxEnvOptions{
+		GOOS:          goos,
+		RequiredMode:  strings.EqualFold(strings.TrimSpace(mode), systemSandboxModeRequired),
+		DropSensitive: strings.EqualFold(strings.TrimSpace(mode), systemSandboxModeRequired),
+		AlwaysDrop: map[string]struct{}{
+			"BYTEMIND_API_KEY":              {},
+			"BYTEMIND_PROVIDER_API_KEY":     {},
+			"BYTEMIND_PROVIDER_API_KEY_ENV": {},
+			sandboxWorkerEnvKey:             {},
+		},
+		ForceSet: map[string]string{
+			sandboxWorkerEnvKey: sandboxWorkerEnvValue,
+		},
+	})
 }

@@ -1,0 +1,50 @@
+package tools
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestBuildRequiredLinuxShellCommandIncludesIsolationSteps(t *testing.T) {
+	workspace := t.TempDir()
+	writable := filepath.Join(workspace, "out")
+	command, err := buildRequiredLinuxShellCommand("go test ./...", &ExecutionContext{
+		Workspace:     workspace,
+		WritableRoots: []string{writable},
+	})
+	if err != nil {
+		t.Fatalf("build command: %v", err)
+	}
+	if !strings.Contains(command, "mount -o remount,ro /") {
+		t.Fatalf("expected read-only remount step, got %q", command)
+	}
+	workspaceQuoted := shellSingleQuote(filepath.Clean(workspace))
+	if !strings.Contains(command, "mount --bind "+workspaceQuoted+" "+workspaceQuoted) {
+		t.Fatalf("expected workspace bind step, got %q", command)
+	}
+	writableQuoted := shellSingleQuote(filepath.Clean(writable))
+	if !strings.Contains(command, "mount --bind "+writableQuoted+" "+writableQuoted) {
+		t.Fatalf("expected writable root bind step, got %q", command)
+	}
+	if !strings.Contains(command, "go test ./...") {
+		t.Fatalf("expected original command suffix, got %q", command)
+	}
+}
+
+func TestBuildRequiredLinuxShellCommandRequiresWorkspace(t *testing.T) {
+	_, err := buildRequiredLinuxShellCommand("git status", &ExecutionContext{})
+	if err == nil {
+		t.Fatal("expected missing workspace error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "workspace") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestShellSingleQuoteEscapesApostrophe(t *testing.T) {
+	got := shellSingleQuote("a'b")
+	if got != `'a'"'"'b'` {
+		t.Fatalf("unexpected quoting: %q", got)
+	}
+}

@@ -49,6 +49,8 @@ type PromptInput struct {
 	ApprovalPolicy string
 	ApprovalMode   string
 	AwayPolicy     string
+	SandboxEnabled bool
+	SystemSandbox  string
 	Model          string
 	Mode           string
 	Platform       string
@@ -141,6 +143,14 @@ func renderSystemBlock(input PromptInput) string {
 	if awayPolicy == "" {
 		awayPolicy = "auto_deny_continue"
 	}
+	systemSandbox := strings.TrimSpace(input.SystemSandbox)
+	if systemSandbox == "" {
+		systemSandbox = "off"
+	}
+	sandboxEnabled := "false"
+	if input.SandboxEnabled {
+		sandboxEnabled = "true"
+	}
 	gitRepo := "no"
 	if isGitRepository(workspace) {
 		gitRepo = "yes"
@@ -158,6 +168,8 @@ func renderSystemBlock(input PromptInput) string {
 		fmt.Sprintf("approval_policy: %s", approval),
 		fmt.Sprintf("approval_mode: %s", approvalMode),
 		fmt.Sprintf("away_policy: %s", awayPolicy),
+		fmt.Sprintf("sandbox_enabled: %s", sandboxEnabled),
+		fmt.Sprintf("system_sandbox_mode: %s", systemSandbox),
 		"",
 		"[Available Skills]",
 		"- Skills are reusable task profiles available in this session. Only the [Active Skill] block, when present, is currently in effect.",

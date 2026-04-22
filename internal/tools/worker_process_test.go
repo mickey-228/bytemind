@@ -387,7 +387,7 @@ func TestBuildWorkerProcessEnvStripsSensitiveKeys(t *testing.T) {
 		"BYTEMIND_PROVIDER_API_KEY=provider-secret",
 		"BYTEMIND_SANDBOX_WORKER=0",
 		"HOME=/home/test",
-	})
+	}, "off", "linux")
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, "BYTEMIND_API_KEY=") {
 		t.Fatalf("expected BYTEMIND_API_KEY to be removed, got %q", joined)
@@ -397,6 +397,28 @@ func TestBuildWorkerProcessEnvStripsSensitiveKeys(t *testing.T) {
 	}
 	if !strings.Contains(joined, "BYTEMIND_SANDBOX_WORKER=1") {
 		t.Fatalf("expected sandbox worker marker to be injected, got %q", joined)
+	}
+}
+
+func TestBuildWorkerProcessEnvRequiredLinuxKeepsAllowlistedKeysOnly(t *testing.T) {
+	env := buildWorkerProcessEnv([]string{
+		"PATH=/usr/bin",
+		"HOME=/home/test",
+		"WINDIR=C:\\Windows",
+		"OPENAI_API_KEY=secret",
+	}, "required", "linux")
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "OPENAI_API_KEY=") {
+		t.Fatalf("expected sensitive key to be removed in required mode, got %q", joined)
+	}
+	if strings.Contains(joined, "WINDIR=") {
+		t.Fatalf("expected non-linux allowlist key to be removed, got %q", joined)
+	}
+	if !strings.Contains(joined, "PATH=/usr/bin") {
+		t.Fatalf("expected PATH to remain, got %q", joined)
+	}
+	if !strings.Contains(joined, "BYTEMIND_SANDBOX_WORKER=1") {
+		t.Fatalf("expected sandbox worker marker, got %q", joined)
 	}
 }
 
@@ -463,7 +485,7 @@ func TestResolveLaunchUsesLinuxBackendWhenAvailable(t *testing.T) {
 	}
 	launch, err := invoker.resolveLaunch(workerRPCRequest{
 		Execution: workerRPCExecutionContext{
-			SystemSandboxMode: "required",
+			SystemSandboxMode: "best_effort",
 		},
 	})
 	if err != nil {
@@ -480,6 +502,42 @@ func TestResolveLaunchUsesLinuxBackendWhenAvailable(t *testing.T) {
 		if arg == "--net" {
 			t.Fatalf("worker launch should not force --net isolation: %#v", launch.Args)
 		}
+	}
+}
+
+func TestResolveLaunchRequiredLinuxWrapsWorkerWithFilesystemIsolation(t *testing.T) {
+	invoker := osExecWorkerInvoker{
+		executablePath: "/tmp/bytemind",
+		goos:           "linux",
+		lookPath: func(name string) (string, error) {
+			if name != "unshare" {
+				t.Fatalf("unexpected binary lookup: %q", name)
+			}
+			return "/usr/bin/unshare", nil
+		},
+	}
+	launch, err := invoker.resolveLaunch(workerRPCRequest{
+		Execution: workerRPCExecutionContext{
+			Workspace:         "/tmp/workspace",
+			WritableRoots:     []string{"/tmp/workspace/out"},
+			SystemSandboxMode: "required",
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve launch: %v", err)
+	}
+	if launch.Path != "/usr/bin/unshare" {
+		t.Fatalf("expected unshare backend, got %q", launch.Path)
+	}
+	if len(launch.Args) < 5 {
+		t.Fatalf("unexpected launch args: %#v", launch.Args)
+	}
+	last := launch.Args[len(launch.Args)-1]
+	if !strings.Contains(last, "mount -o remount,ro /") {
+		t.Fatalf("expected filesystem isolation wrapper in command, got %#v", launch.Args)
+	}
+	if !strings.Contains(last, "exec '/tmp/bytemind' 'worker' '--sandbox-stdio'") {
+		t.Fatalf("expected worker exec bootstrap in wrapped command, got %q", last)
 	}
 }
 

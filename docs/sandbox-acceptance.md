@@ -17,6 +17,10 @@ This document defines the minimum acceptance checks for the current sandbox impl
 - Subprocess worker path for sandbox-enabled executions.
 - Approval behavior alignment across `interactive` and `away` modes.
 - Fail-closed behavior when subprocess worker is unavailable.
+- Linux `required` mode execution hardening:
+  - root filesystem remounted read-only inside sandboxed shell namespace
+  - writable bind remount only for `workspace`, `writable_roots`, and `/tmp`
+  - minimal runtime environment with sensitive key stripping
 
 ## Matrix
 
@@ -31,6 +35,7 @@ This document defines the minimum acceptance checks for the current sandbox impl
 | Subprocess worker unavailable while sandbox enabled | Fail closed with internal sandbox worker error. |
 | `system_sandbox_mode=required` + OS backend unavailable | Fail closed before worker execution. |
 | `system_sandbox_mode=best_effort` + OS backend unavailable | Fallback to normal worker launch. |
+| Linux + `system_sandbox_mode=required` + shell command writes outside writable roots | Write fails from read-only filesystem enforcement. |
 
 ## Automated Checks
 

@@ -19,6 +19,7 @@ import (
 )
 
 var validateSystemSandboxRuntime = tools.ValidateSystemSandboxRuntime
+var resolveSystemSandboxRuntimeStatus = tools.ResolveSystemSandboxRuntimeStatus
 
 // BootstrapRequest declares dependencies and runtime overrides needed to
 // assemble the application runtime for CLI/TUI execution.
@@ -73,6 +74,11 @@ func Bootstrap(req BootstrapRequest) (Runtime, error) {
 	}
 	if err := validateSystemSandboxRuntime(cfg.SandboxEnabled, cfg.SystemSandboxMode); err != nil {
 		return Runtime{}, err
+	}
+	if status, statusErr := resolveSystemSandboxRuntimeStatus(cfg.SandboxEnabled, cfg.SystemSandboxMode); statusErr != nil {
+		return Runtime{}, statusErr
+	} else if status.Fallback && strings.TrimSpace(status.Message) != "" {
+		log.Printf("bootstrap: %s", status.Message)
 	}
 
 	apiKey := cfg.Provider.ResolveAPIKey()

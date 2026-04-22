@@ -330,6 +330,31 @@ func TestResolveSystemSandboxBackendEnablesLinuxUnshareWhenAvailable(t *testing.
 	}
 }
 
+func TestWithRequiredLinuxShellLimitsAddsGuardCommands(t *testing.T) {
+	got := withRequiredLinuxShellLimits("go test ./...")
+	wantParts := []string{
+		"ulimit -t 120 >/dev/null 2>&1 || true",
+		"ulimit -f 1048576 >/dev/null 2>&1 || true",
+		"ulimit -v 2097152 >/dev/null 2>&1 || true",
+		"go test ./...",
+	}
+	for _, part := range wantParts {
+		if !strings.Contains(got, part) {
+			t.Fatalf("expected wrapped command to contain %q, got %q", part, got)
+		}
+	}
+}
+
+func TestWithRequiredLinuxShellLimitsTrimsAndHandlesEmpty(t *testing.T) {
+	if got := withRequiredLinuxShellLimits("   "); got != "" {
+		t.Fatalf("expected empty command to stay empty, got %q", got)
+	}
+	got := withRequiredLinuxShellLimits("  git status  ")
+	if !strings.HasSuffix(got, "git status") {
+		t.Fatalf("expected command suffix to be trimmed original command, got %q", got)
+	}
+}
+
 func TestRunShellToolReturnsTimeoutError(t *testing.T) {
 	tool := RunShellTool{}
 	command := "sleep 2"

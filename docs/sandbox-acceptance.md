@@ -29,6 +29,8 @@ This document defines the minimum acceptance checks for the current sandbox impl
 | `interactive` + escalation needed + no approval channel | Operation is denied with `approval_channel_unavailable`. |
 | `away` + operation needs approval | Operation is denied immediately, no approval prompt. |
 | Subprocess worker unavailable while sandbox enabled | Fail closed with internal sandbox worker error. |
+| `system_sandbox_mode=required` + OS backend unavailable | Fail closed before worker execution. |
+| `system_sandbox_mode=best_effort` + OS backend unavailable | Fallback to normal worker launch. |
 
 ## Automated Checks
 

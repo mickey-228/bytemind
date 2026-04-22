@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	sandboxpkg "bytemind/internal/sandbox"
@@ -33,6 +34,8 @@ type subprocessWorker struct {
 
 type osExecWorkerInvoker struct {
 	executablePath string
+	lookPath       func(string) (string, error)
+	goos           string
 }
 
 type workerRPCRequest struct {
@@ -49,6 +52,7 @@ type workerRPCExecutionContext struct {
 	ApprovalMode              string                   `json:"approval_mode"`
 	AwayPolicy                string                   `json:"away_policy"`
 	SandboxEnabled            bool                     `json:"sandbox_enabled"`
+	SystemSandboxMode         string                   `json:"system_sandbox_mode"`
 	SkipShellApproval         bool                     `json:"skip_shell_approval"`
 	SandboxEscalationApproved bool                     `json:"sandbox_escalation_approved"`
 	LeaseID                   string                   `json:"lease_id"`
@@ -130,21 +134,20 @@ func shouldUseSubprocessWorker(execCtx *ExecutionContext) bool {
 }
 
 func (i osExecWorkerInvoker) Invoke(ctx context.Context, req workerRPCRequest) (workerRPCResponse, string, error) {
-	executablePath := strings.TrimSpace(i.executablePath)
-	if executablePath == "" {
-		return workerRPCResponse{}, "", errors.New("worker executable path is empty")
+	launch, err := i.resolveLaunch(req)
+	if err != nil {
+		return workerRPCResponse{}, "", err
 	}
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return workerRPCResponse{}, "", err
 	}
 
-	cmd := exec.CommandContext(ctx, executablePath, sandboxWorkerSubcommand, sandboxWorkerStdioFlag)
-	workspace := strings.TrimSpace(req.Execution.Workspace)
-	if workspace != "" {
-		cmd.Dir = workspace
+	cmd := exec.CommandContext(ctx, launch.Path, launch.Args[1:]...)
+	if strings.TrimSpace(launch.Dir) != "" {
+		cmd.Dir = launch.Dir
 	}
-	cmd.Env = buildWorkerProcessEnv(os.Environ())
+	cmd.Env = launch.Env
 	cmd.Stdin = bytes.NewReader(append(payload, '\n'))
 
 	var stdoutBuffer bytes.Buffer
@@ -161,6 +164,49 @@ func (i osExecWorkerInvoker) Invoke(ctx context.Context, req workerRPCRequest) (
 		return workerRPCResponse{}, stderrBuffer.String(), fmt.Errorf("decode worker response: %w", err)
 	}
 	return response, stderrBuffer.String(), nil
+}
+
+type workerProcessLaunch struct {
+	Path string
+	Args []string
+	Dir  string
+	Env  []string
+}
+
+func (i osExecWorkerInvoker) resolveLaunch(req workerRPCRequest) (workerProcessLaunch, error) {
+	executablePath := strings.TrimSpace(i.executablePath)
+	if executablePath == "" {
+		return workerProcessLaunch{}, errors.New("worker executable path is empty")
+	}
+
+	mode := normalizeSystemSandboxMode(&ExecutionContext{SystemSandboxMode: req.Execution.SystemSandboxMode})
+	goos := strings.TrimSpace(i.goos)
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	lookPath := i.lookPath
+	if lookPath == nil {
+		lookPath = runShellLookPath
+	}
+	backend, err := resolveSystemSandboxBackend(mode, goos, lookPath)
+	if err != nil {
+		return workerProcessLaunch{}, err
+	}
+
+	path := executablePath
+	args := []string{executablePath, sandboxWorkerSubcommand, sandboxWorkerStdioFlag}
+	if backend.Enabled {
+		path = backend.Runner
+		backendArgs := append(linuxSystemSandboxWorkerArgs(), executablePath, sandboxWorkerSubcommand, sandboxWorkerStdioFlag)
+		args = append([]string{backend.Runner}, backendArgs...)
+	}
+
+	return workerProcessLaunch{
+		Path: path,
+		Args: args,
+		Dir:  strings.TrimSpace(req.Execution.Workspace),
+		Env:  buildWorkerProcessEnv(os.Environ()),
+	}, nil
 }
 
 func RunWorkerProcess(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
@@ -229,6 +275,7 @@ func encodeWorkerExecutionContext(execCtx *ExecutionContext) workerRPCExecutionC
 		ApprovalMode:              execCtx.ApprovalMode,
 		AwayPolicy:                execCtx.AwayPolicy,
 		SandboxEnabled:            execCtx.SandboxEnabled,
+		SystemSandboxMode:         execCtx.SystemSandboxMode,
 		SkipShellApproval:         execCtx.SkipShellApproval,
 		SandboxEscalationApproved: execCtx.SandboxEscalationApproved,
 		LeaseID:                   execCtx.LeaseID,
@@ -250,6 +297,7 @@ func decodeWorkerExecutionContext(payload workerRPCExecutionContext) *ExecutionC
 		ApprovalMode:              payload.ApprovalMode,
 		AwayPolicy:                payload.AwayPolicy,
 		SandboxEnabled:            payload.SandboxEnabled,
+		SystemSandboxMode:         payload.SystemSandboxMode,
 		SkipShellApproval:         payload.SkipShellApproval,
 		SandboxEscalationApproved: payload.SandboxEscalationApproved,
 		LeaseID:                   payload.LeaseID,

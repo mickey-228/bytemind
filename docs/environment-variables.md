@@ -10,6 +10,7 @@ ByteMind TUI supports the following runtime environment variables:
 | `BYTEMIND_APPROVAL_MODE` | `interactive` | Runtime approval mode override. Supported values: `interactive`, `away`. |
 | `BYTEMIND_AWAY_POLICY` | `auto_deny_continue` | Away-mode behavior for denied approval requests. Supported values: `auto_deny_continue`, `fail_fast`. |
 | `BYTEMIND_SANDBOX_ENABLED` | `false` | Enables lease-based sandbox policy checks and worker-path enforcement for shell/file tools. |
+| `BYTEMIND_SYSTEM_SANDBOX_MODE` | `off` | System sandbox execution mode for shell tools. Supported values: `off`, `best_effort`, `required`. |
 | `BYTEMIND_WRITABLE_ROOTS` | empty | Additional writable roots. Use the OS path-list separator (`;` on Windows, `:` on Linux/macOS). |
 | `BYTEMIND_SANDBOX_WORKER` | internal | Internal process marker used to avoid recursive worker spawning. Do not set manually. |
 

@@ -264,6 +264,72 @@ func TestResolveWindowsShellExecutableFallbacksToPowerShellLiteral(t *testing.T)
 	}
 }
 
+func TestNormalizeSystemSandboxModeDefaultsOff(t *testing.T) {
+	if got := normalizeSystemSandboxMode(nil); got != systemSandboxModeOff {
+		t.Fatalf("expected nil exec context to normalize as off, got %q", got)
+	}
+	if got := normalizeSystemSandboxMode(&ExecutionContext{}); got != systemSandboxModeOff {
+		t.Fatalf("expected empty mode to normalize as off, got %q", got)
+	}
+	if got := normalizeSystemSandboxMode(&ExecutionContext{SystemSandboxMode: "unknown"}); got != systemSandboxModeOff {
+		t.Fatalf("expected unknown mode to normalize as off, got %q", got)
+	}
+}
+
+func TestResolveSystemSandboxBackendRequiredFailsOnUnsupportedOS(t *testing.T) {
+	_, err := resolveSystemSandboxBackend(systemSandboxModeRequired, "windows", func(string) (string, error) {
+		return "", errors.New("not found")
+	})
+	if err == nil {
+		t.Fatal("expected required mode to fail on unsupported OS")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveSystemSandboxBackendBestEffortFallsBackWhenUnavailable(t *testing.T) {
+	backend, err := resolveSystemSandboxBackend(systemSandboxModeBestEffort, "linux", func(string) (string, error) {
+		return "", errors.New("not found")
+	})
+	if err != nil {
+		t.Fatalf("expected best_effort to fallback without error, got %v", err)
+	}
+	if backend.Enabled {
+		t.Fatalf("expected backend to be disabled when unshare is unavailable, got %#v", backend)
+	}
+}
+
+func TestResolveSystemSandboxBackendRequiredFailsWhenUnavailableOnLinux(t *testing.T) {
+	_, err := resolveSystemSandboxBackend(systemSandboxModeRequired, "linux", func(string) (string, error) {
+		return "", errors.New("not found")
+	})
+	if err == nil {
+		t.Fatal("expected required mode to fail when unshare is unavailable")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "unshare") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveSystemSandboxBackendEnablesLinuxUnshareWhenAvailable(t *testing.T) {
+	backend, err := resolveSystemSandboxBackend(systemSandboxModeRequired, "linux", func(string) (string, error) {
+		return "/usr/bin/unshare", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !backend.Enabled {
+		t.Fatalf("expected backend enabled, got %#v", backend)
+	}
+	if backend.Runner != "/usr/bin/unshare" {
+		t.Fatalf("expected unshare runner, got %#v", backend)
+	}
+	if len(backend.ArgPrefix) == 0 {
+		t.Fatalf("expected unshare arg prefix, got %#v", backend)
+	}
+}
+
 func TestRunShellToolReturnsTimeoutError(t *testing.T) {
 	tool := RunShellTool{}
 	command := "sleep 2"

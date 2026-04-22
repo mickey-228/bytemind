@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -399,10 +400,108 @@ func TestBuildWorkerProcessEnvStripsSensitiveKeys(t *testing.T) {
 	}
 }
 
+func TestResolveLaunchFailsClosedWhenRequiredBackendUnavailable(t *testing.T) {
+	invoker := osExecWorkerInvoker{
+		executablePath: "/tmp/bytemind",
+		goos:           "windows",
+		lookPath: func(string) (string, error) {
+			t.Fatal("lookPath should not be called on unsupported OS")
+			return "", nil
+		},
+	}
+	_, err := invoker.resolveLaunch(workerRPCRequest{
+		Execution: workerRPCExecutionContext{
+			SystemSandboxMode: "required",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected required mode to fail closed when backend is unavailable")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "required") {
+		t.Fatalf("expected required-mode error, got %v", err)
+	}
+}
+
+func TestResolveLaunchBestEffortFallsBackWithoutBackend(t *testing.T) {
+	invoker := osExecWorkerInvoker{
+		executablePath: "/tmp/bytemind",
+		goos:           "linux",
+		lookPath: func(string) (string, error) {
+			return "", errors.New("missing backend")
+		},
+	}
+	launch, err := invoker.resolveLaunch(workerRPCRequest{
+		Execution: workerRPCExecutionContext{
+			Workspace:         "/tmp/workspace",
+			SystemSandboxMode: "best_effort",
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve launch: %v", err)
+	}
+	if launch.Path != "/tmp/bytemind" {
+		t.Fatalf("expected fallback executable path, got %q", launch.Path)
+	}
+	if len(launch.Args) != 3 || launch.Args[1] != sandboxWorkerSubcommand || launch.Args[2] != sandboxWorkerStdioFlag {
+		t.Fatalf("unexpected fallback args: %#v", launch.Args)
+	}
+	if launch.Dir != "/tmp/workspace" {
+		t.Fatalf("expected workspace dir propagation, got %q", launch.Dir)
+	}
+}
+
+func TestResolveLaunchUsesLinuxBackendWhenAvailable(t *testing.T) {
+	invoker := osExecWorkerInvoker{
+		executablePath: "/tmp/bytemind",
+		goos:           "linux",
+		lookPath: func(name string) (string, error) {
+			if name != "unshare" {
+				t.Fatalf("unexpected binary lookup: %q", name)
+			}
+			return "/usr/bin/unshare", nil
+		},
+	}
+	launch, err := invoker.resolveLaunch(workerRPCRequest{
+		Execution: workerRPCExecutionContext{
+			SystemSandboxMode: "required",
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve launch: %v", err)
+	}
+	if launch.Path != "/usr/bin/unshare" {
+		t.Fatalf("expected unshare backend, got %q", launch.Path)
+	}
+	expected := append([]string{"/usr/bin/unshare"}, append(linuxSystemSandboxWorkerArgs(), "/tmp/bytemind", sandboxWorkerSubcommand, sandboxWorkerStdioFlag)...)
+	if strings.Join(launch.Args, "\n") != strings.Join(expected, "\n") {
+		t.Fatalf("unexpected backend args:\nwant: %#v\ngot:  %#v", expected, launch.Args)
+	}
+	for _, arg := range launch.Args {
+		if arg == "--net" {
+			t.Fatalf("worker launch should not force --net isolation: %#v", launch.Args)
+		}
+	}
+}
+
 func TestNewDefaultExecutorWorkerSkipsSubprocessInsideWorkerEnv(t *testing.T) {
 	t.Setenv(sandboxWorkerEnvKey, sandboxWorkerEnvValue)
 	worker := newDefaultExecutorWorker(DefaultRegistry(), maxCharsOutputNormalizer{})
 	if _, ok := worker.(inProcessWorker); !ok {
 		t.Fatalf("expected in-process worker when %s is set, got %T", sandboxWorkerEnvKey, worker)
+	}
+}
+
+func TestWorkerExecutionContextRoundTripsSystemSandboxMode(t *testing.T) {
+	payload := encodeWorkerExecutionContext(&ExecutionContext{
+		Workspace:         "C:\\workspace",
+		SandboxEnabled:    true,
+		SystemSandboxMode: "required",
+	})
+	decoded := decodeWorkerExecutionContext(payload)
+	if decoded == nil {
+		t.Fatal("expected decoded execution context")
+	}
+	if decoded.SystemSandboxMode != "required" {
+		t.Fatalf("expected system sandbox mode to roundtrip, got %#v", decoded)
 	}
 }

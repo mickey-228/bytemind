@@ -169,6 +169,11 @@ func (e *defaultEngine) processTurn(ctx context.Context, p turnProcessParams) (s
 			return "", false, err
 		}
 		envelope, ok := latestToolResultEnvelope(p.Session)
+		if ok && p.TaskReport != nil {
+			if note := systemSandboxFallbackReportEntry(call.Function.Name, envelope); note != "" {
+				p.TaskReport.RecordSystemSandboxFallback(note)
+			}
+		}
 		if ok && p.TaskReport != nil && envelope.Status == statusDenied {
 			p.TaskReport.RecordDenied(call.Function.Name)
 		}
@@ -219,10 +224,16 @@ const (
 )
 
 type toolResultEnvelope struct {
-	OK         *bool  `json:"ok"`
-	Error      string `json:"error"`
-	Status     string `json:"status"`
-	ReasonCode string `json:"reason_code"`
+	OK            *bool  `json:"ok"`
+	Error         string `json:"error"`
+	Status        string `json:"status"`
+	ReasonCode    string `json:"reason_code"`
+	SystemSandbox struct {
+		Mode           string `json:"mode"`
+		Backend        string `json:"backend"`
+		Fallback       bool   `json:"fallback"`
+		FallbackReason string `json:"fallback_reason"`
+	} `json:"system_sandbox"`
 }
 
 func latestToolResultEnvelope(sess *session.Session) (toolResultEnvelope, bool) {
@@ -264,6 +275,33 @@ func normalizeAwayPolicy(policy string) string {
 		return awayPolicyAutoDenyContinue
 	}
 	return policy
+}
+
+func systemSandboxFallbackReportEntry(toolName string, envelope toolResultEnvelope) string {
+	if !envelope.SystemSandbox.Fallback {
+		return ""
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		toolName = "unknown_tool"
+	}
+	mode := strings.TrimSpace(envelope.SystemSandbox.Mode)
+	backend := strings.TrimSpace(envelope.SystemSandbox.Backend)
+	reason := strings.TrimSpace(envelope.SystemSandbox.FallbackReason)
+	parts := make([]string, 0, 3)
+	if mode != "" {
+		parts = append(parts, "mode="+mode)
+	}
+	if backend != "" {
+		parts = append(parts, "backend="+backend)
+	}
+	if reason != "" {
+		parts = append(parts, "reason="+reason)
+	}
+	if len(parts) == 0 {
+		return toolName
+	}
+	return toolName + " (" + strings.Join(parts, ", ") + ")"
 }
 
 func (e *defaultEngine) appendSkippedDependencyResult(

@@ -66,9 +66,11 @@ func TestRunPromptRecordsTaskStateChangedAuditWithSessionTaskTrace(t *testing.T)
 	runner := NewRunner(Options{
 		Workspace: workspace,
 		Config: config.Config{
-			Provider:      config.ProviderConfig{Model: "test-model"},
-			MaxIterations: 4,
-			Stream:        false,
+			Provider:          config.ProviderConfig{Model: "test-model"},
+			MaxIterations:     4,
+			Stream:            false,
+			SandboxEnabled:    true,
+			SystemSandboxMode: "best_effort",
 		},
 		Client:     client,
 		Store:      store,
@@ -174,9 +176,11 @@ func TestRunPromptExecutesToolThroughRuntimeGatewayBoundary(t *testing.T) {
 	runner := NewRunner(Options{
 		Workspace: workspace,
 		Config: config.Config{
-			Provider:      config.ProviderConfig{Model: "test-model"},
-			MaxIterations: 4,
-			Stream:        false,
+			Provider:          config.ProviderConfig{Model: "test-model"},
+			MaxIterations:     4,
+			Stream:            false,
+			SandboxEnabled:    true,
+			SystemSandboxMode: "best_effort",
 		},
 		Client:   client,
 		Store:    store,
@@ -254,9 +258,11 @@ func TestRunPromptRecordsSystemSandboxMetadataInToolExecuteAudit(t *testing.T) {
 	runner := NewRunner(Options{
 		Workspace: workspace,
 		Config: config.Config{
-			Provider:      config.ProviderConfig{Model: "test-model"},
-			MaxIterations: 4,
-			Stream:        false,
+			Provider:          config.ProviderConfig{Model: "test-model"},
+			MaxIterations:     4,
+			Stream:            false,
+			SandboxEnabled:    true,
+			SystemSandboxMode: "best_effort",
 		},
 		Client:     client,
 		Store:      store,
@@ -276,12 +282,24 @@ func TestRunPromptRecordsSystemSandboxMetadataInToolExecuteAudit(t *testing.T) {
 	}
 
 	events := auditStore.snapshot()
+	var startEvent *storagepkg.AuditEvent
 	var resultEvent *storagepkg.AuditEvent
 	for i := range events {
-		if events[i].Action == "tool_execute_result" {
-			resultEvent = &events[i]
-			break
+		if events[i].Action == "tool_execute_start" && events[i].Metadata["tool_name"] == "run_shell" {
+			startEvent = &events[i]
 		}
+		if events[i].Action == "tool_execute_result" && events[i].Metadata["tool_name"] == "run_shell" {
+			resultEvent = &events[i]
+		}
+	}
+	if startEvent == nil {
+		t.Fatalf("expected tool_execute_start audit event, got %+v", events)
+	}
+	if got := startEvent.Metadata["sandbox_enabled"]; got != "true" {
+		t.Fatalf("expected start event sandbox_enabled=true, got %q", got)
+	}
+	if got := startEvent.Metadata["sandbox_mode"]; got != "best_effort" {
+		t.Fatalf("expected start event sandbox_mode=best_effort, got %q", got)
 	}
 	if resultEvent == nil {
 		t.Fatalf("expected tool_execute_result audit event, got %+v", events)

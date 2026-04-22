@@ -85,6 +85,10 @@ func (e *defaultEngine) executeToolCall(
 	})
 	sandboxLeaseID := fmt.Sprintf("session-%s", sess.ID)
 	sandboxRunID := fmt.Sprintf("trace-%s", traceID)
+	systemSandboxMode := strings.TrimSpace(runner.config.SystemSandboxMode)
+	if systemSandboxMode == "" {
+		systemSandboxMode = "off"
+	}
 	runner.appendAudit(ctx, storagepkg.AuditEvent{
 		SessionID: sessionID,
 		TraceID:   traceID,
@@ -94,6 +98,8 @@ func (e *defaultEngine) executeToolCall(
 			"tool_name":        call.Function.Name,
 			"sandbox_lease_id": sandboxLeaseID,
 			"sandbox_run_id":   sandboxRunID,
+			"sandbox_enabled":  strconv.FormatBool(runner.config.SandboxEnabled),
+			"sandbox_mode":     systemSandboxMode,
 		},
 	})
 	if out != nil {

@@ -1401,6 +1401,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return next, cmd
 		}
+		if handled, cmd, err := m.tryHandleNaturalMCPSetupIntent(rawValue); handled {
+			m.input.Reset()
+			m.clearPasteConfirmPending()
+			m.clearPasteBurstCapture()
+			m.syncInputOverlays()
+			if err != nil {
+				m.statusNote = err.Error()
+				return m, nil
+			}
+			return m, cmd
+		}
 		return m.submitPrompt(value)
 	}
 

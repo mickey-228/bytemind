@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -33,6 +34,118 @@ type mcpSetupSession struct {
 	preset string
 	step   mcpSetupStep
 	req    mcpctl.AddRequest
+}
+
+var (
+	mcpSetupIDPattern       = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	mcpSetupIDAfterPattern  = regexp.MustCompile(`\bmcp\s*[:\-]?\s*([a-z0-9][a-z0-9_-]*)\b`)
+	mcpSetupIDBeforePattern = regexp.MustCompile(`\b([a-z0-9][a-z0-9_-]*)\s*[:\-]?\s*mcp\b`)
+	mcpSetupVerbIDPattern   = regexp.MustCompile(`\b(?:setup|configure|config|add|install)\s+([a-z0-9][a-z0-9_-]*)\b`)
+	mcpSetupTokenPattern    = regexp.MustCompile(`[a-z0-9][a-z0-9_-]*`)
+)
+
+func (m *model) tryHandleNaturalMCPSetupIntent(input string) (handled bool, cmd tea.Cmd, err error) {
+	if m == nil {
+		return false, nil, nil
+	}
+	value := strings.TrimSpace(input)
+	if !looksLikeMCPSetupIntent(value) {
+		return false, nil, nil
+	}
+	serverID := extractMCPSetupID(value)
+	if serverID == "" {
+		m.appendCommandExchange(value, strings.Join([]string{
+			"Detected MCP setup intent, but server id is missing.",
+			"Use `/mcp setup <id>` or natural text like `帮我配置 github mcp`.",
+		}, "\n"))
+		m.statusNote = "MCP setup requires server id."
+		return true, nil, nil
+	}
+	if setupErr := m.startMCPSetup(value, []string{"/mcp", "setup", serverID}); setupErr != nil {
+		return true, nil, setupErr
+	}
+	return true, nil, nil
+}
+
+func looksLikeMCPSetupIntent(input string) bool {
+	value := strings.ToLower(strings.TrimSpace(input))
+	if value == "" || strings.HasPrefix(value, "/") || !strings.Contains(value, "mcp") {
+		return false
+	}
+	keywords := []string{
+		"setup",
+		"set up",
+		"configure",
+		"config",
+		"add",
+		"install",
+		"配置",
+		"接入",
+		"添加",
+		"安装",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(value, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractMCPSetupID(input string) string {
+	value := strings.ToLower(strings.TrimSpace(input))
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, mcpSetupPresetGithub) {
+		return mcpSetupPresetGithub
+	}
+	for _, pattern := range []*regexp.Regexp{
+		mcpSetupIDBeforePattern,
+		mcpSetupIDAfterPattern,
+		mcpSetupVerbIDPattern,
+	} {
+		matches := pattern.FindStringSubmatch(value)
+		if len(matches) != 2 {
+			continue
+		}
+		if candidate := normalizeMCPSetupID(matches[1]); candidate != "" {
+			return candidate
+		}
+	}
+	for _, token := range mcpSetupTokenPattern.FindAllString(value, -1) {
+		if candidate := normalizeMCPSetupID(token); candidate != "" {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func normalizeMCPSetupID(token string) string {
+	token = strings.ToLower(strings.TrimSpace(token))
+	if !mcpSetupIDPattern.MatchString(token) || isMCPSetupReservedToken(token) {
+		return ""
+	}
+	return token
+}
+
+func isMCPSetupReservedToken(token string) bool {
+	switch token {
+	case "mcp",
+		"setup", "set", "up",
+		"configure", "config",
+		"add", "install",
+		"server", "servers", "tool", "tools",
+		"help", "please", "pls",
+		"can", "you", "me", "my",
+		"the", "a", "an",
+		"to", "for", "with", "and", "or",
+		"how", "what",
+		"list", "show", "reload", "enable", "disable", "test":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *model) startMCPSetup(input string, fields []string) error {

@@ -257,6 +257,55 @@ func TestHandleSlashCommandMCPSetupGithubStartsWizard(t *testing.T) {
 	}
 }
 
+func TestNaturalLanguageMCPSetupStartsWizard(t *testing.T) {
+	service := &stubMCPService{}
+	m := newMCPSetupTestModel(service)
+	m.setInputValue("please configure github mcp")
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := next.(model)
+
+	if updated.mcpSetup == nil {
+		t.Fatal("expected natural language to start mcp setup")
+	}
+	if updated.mcpSetup.step != mcpSetupStepGithubToken {
+		t.Fatalf("expected github setup token step, got %q", updated.mcpSetup.step)
+	}
+	if strings.TrimSpace(updated.input.Value()) != "" {
+		t.Fatalf("expected input to reset after setup trigger, got %q", updated.input.Value())
+	}
+	last := updated.chatItems[len(updated.chatItems)-1].Body
+	if !strings.Contains(last, "Preset auto-detected: github") {
+		t.Fatalf("expected setup intro in chat, got %q", last)
+	}
+}
+
+func TestNaturalLanguageMCPSetupMissingIDShowsHint(t *testing.T) {
+	service := &stubMCPService{}
+	m := newMCPSetupTestModel(service)
+	m.setInputValue("please configure mcp")
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := next.(model)
+
+	if updated.mcpSetup != nil {
+		t.Fatalf("expected setup not to start without id, got %#v", updated.mcpSetup)
+	}
+	if service.addCalls != 0 || service.testCalls != 0 || service.enableCalls != 0 || service.reloadCalls != 0 {
+		t.Fatalf("expected no runtime calls, got add=%d test=%d enable=%d reload=%d", service.addCalls, service.testCalls, service.enableCalls, service.reloadCalls)
+	}
+	if len(updated.chatItems) < 2 {
+		t.Fatalf("expected guidance exchange in chat, got %#v", updated.chatItems)
+	}
+	last := updated.chatItems[len(updated.chatItems)-1].Body
+	if !strings.Contains(last, "server id is missing") {
+		t.Fatalf("expected missing id guidance, got %q", last)
+	}
+	if !strings.Contains(updated.statusNote, "requires server id") {
+		t.Fatalf("expected status note about missing id, got %q", updated.statusNote)
+	}
+}
+
 func TestMCPSetupAllowsTypingAfterWizardStarts(t *testing.T) {
 	service := &stubMCPService{}
 	m := newMCPSetupTestModel(service)

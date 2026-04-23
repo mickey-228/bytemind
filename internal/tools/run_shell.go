@@ -146,11 +146,12 @@ func buildSystemSandboxExecutionMetadata(mode string, backend systemSandboxRunti
 		status = "fallback"
 	}
 	payload := map[string]any{
-		"mode":     mode,
-		"backend":  backendName,
-		"active":   active,
-		"fallback": fallback,
-		"status":   status,
+		"mode":             mode,
+		"backend":          backendName,
+		"active":           active,
+		"required_capable": requiredSystemSandboxCapabilitiesSatisfied(backend),
+		"fallback":         fallback,
+		"status":           status,
 	}
 	if reason != "" {
 		payload["fallback_reason"] = reason

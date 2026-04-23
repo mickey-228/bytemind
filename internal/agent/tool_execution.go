@@ -469,11 +469,12 @@ func appendSystemSandboxAuditMetadata(metadata map[string]string, result string)
 	}
 	var payload struct {
 		SystemSandbox *struct {
-			Mode           string `json:"mode"`
-			Backend        string `json:"backend"`
-			Status         string `json:"status"`
-			Fallback       bool   `json:"fallback"`
-			FallbackReason string `json:"fallback_reason"`
+			Mode            string `json:"mode"`
+			Backend         string `json:"backend"`
+			Status          string `json:"status"`
+			RequiredCapable bool   `json:"required_capable"`
+			Fallback        bool   `json:"fallback"`
+			FallbackReason  string `json:"fallback_reason"`
 		} `json:"system_sandbox"`
 	}
 	if err := json.Unmarshal([]byte(result), &payload); err != nil || payload.SystemSandbox == nil {
@@ -489,6 +490,7 @@ func appendSystemSandboxAuditMetadata(metadata map[string]string, result string)
 	if status := strings.TrimSpace(systemSandbox.Status); status != "" {
 		metadata["sandbox_status"] = status
 	}
+	metadata["sandbox_required_capable"] = strconv.FormatBool(systemSandbox.RequiredCapable)
 	metadata["sandbox_fallback"] = strconv.FormatBool(systemSandbox.Fallback)
 	if reason := strings.TrimSpace(systemSandbox.FallbackReason); reason != "" {
 		metadata["sandbox_fallback_reason"] = reason

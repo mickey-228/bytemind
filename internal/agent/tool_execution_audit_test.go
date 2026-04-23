@@ -263,7 +263,7 @@ func TestRunPromptRecordsSystemSandboxMetadataInToolExecuteAudit(t *testing.T) {
 		result: runtimepkg.TaskResult{
 			TaskID: "runtime-task-1",
 			Status: corepkg.TaskCompleted,
-			Output: []byte(`{"ok":true,"exit_code":0,"stdout":"ok","stderr":"","system_sandbox":{"mode":"best_effort","backend":"linux_unshare","active":false,"fallback":true,"status":"fallback","fallback_reason":"linux backend unavailable"}}`),
+			Output: []byte(`{"ok":true,"exit_code":0,"stdout":"ok","stderr":"","system_sandbox":{"mode":"best_effort","backend":"linux_unshare","active":false,"required_capable":false,"fallback":true,"status":"fallback","fallback_reason":"linux backend unavailable"}}`),
 		},
 	}
 
@@ -324,6 +324,9 @@ func TestRunPromptRecordsSystemSandboxMetadataInToolExecuteAudit(t *testing.T) {
 	}
 	if got := resultEvent.Metadata["sandbox_status"]; got != "fallback" {
 		t.Fatalf("expected sandbox_status=fallback, got %q", got)
+	}
+	if got := resultEvent.Metadata["sandbox_required_capable"]; got != "false" {
+		t.Fatalf("expected sandbox_required_capable=false, got %q", got)
 	}
 	if got := resultEvent.Metadata["sandbox_fallback"]; got != "true" {
 		t.Fatalf("expected sandbox_fallback=true, got %q", got)
@@ -412,11 +415,12 @@ func TestRunPromptRecordsSystemSandboxStartupAudit(t *testing.T) {
 		t.Fatalf("expected startup audit result=%q, got %q", want, got)
 	}
 	for k, want := range map[string]string{
-		"sandbox_enabled":  "true",
-		"sandbox_mode":     "best_effort",
-		"sandbox_backend":  "none",
-		"sandbox_status":   "fallback",
-		"sandbox_fallback": "true",
+		"sandbox_enabled":          "true",
+		"sandbox_mode":             "best_effort",
+		"sandbox_backend":          "none",
+		"sandbox_required_capable": "false",
+		"sandbox_status":           "fallback",
+		"sandbox_fallback":         "true",
 	} {
 		if got := startupEvent.Metadata[k]; got != want {
 			t.Fatalf("expected startup audit metadata[%q]=%q, got %q", k, want, got)

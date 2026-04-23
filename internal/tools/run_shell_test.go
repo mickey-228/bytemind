@@ -387,6 +387,9 @@ func TestBuildSystemSandboxExecutionMetadataDefaults(t *testing.T) {
 	if got := meta["active"]; got != false {
 		t.Fatalf("expected active=false, got %#v", meta)
 	}
+	if got := meta["required_capable"]; got != false {
+		t.Fatalf("expected required_capable=false, got %#v", meta)
+	}
 	if got := meta["fallback"]; got != false {
 		t.Fatalf("expected fallback=false, got %#v", meta)
 	}
@@ -405,6 +408,9 @@ func TestBuildSystemSandboxExecutionMetadataFallback(t *testing.T) {
 	}
 	if got := meta["active"]; got != false {
 		t.Fatalf("expected active=false without backend, got %#v", meta)
+	}
+	if got := meta["required_capable"]; got != false {
+		t.Fatalf("expected required_capable=false in fallback metadata, got %#v", meta)
 	}
 	if got := meta["status"]; got != "fallback" {
 		t.Fatalf("expected status fallback, got %#v", meta)
@@ -452,11 +458,36 @@ func TestRunShellToolResultIncludesSandboxMetadata(t *testing.T) {
 	if got := metadata["active"]; got != false {
 		t.Fatalf("expected active=false, got %#v", metadata)
 	}
+	if got := metadata["required_capable"]; got != false {
+		t.Fatalf("expected required_capable=false, got %#v", metadata)
+	}
 	if got := metadata["fallback"]; got != false {
 		t.Fatalf("expected fallback=false, got %#v", metadata)
 	}
 	if got := metadata["status"]; got != "inactive" {
 		t.Fatalf("expected status inactive, got %#v", metadata)
+	}
+}
+
+func TestBuildSystemSandboxExecutionMetadataMarksRequiredCapabilityWhenBackendSupportsIt(t *testing.T) {
+	meta := buildSystemSandboxExecutionMetadata(systemSandboxModeRequired, systemSandboxRuntimeBackend{
+		Enabled: true,
+		Name:    "linux_unshare",
+		Shell: systemSandboxLaunchSpec{
+			Policy: systemSandboxPolicy{
+				FileIsolation:    true,
+				ProcessIsolation: true,
+			},
+		},
+		Worker: systemSandboxLaunchSpec{
+			Policy: systemSandboxPolicy{
+				FileIsolation:    true,
+				ProcessIsolation: true,
+			},
+		},
+	})
+	if got := meta["required_capable"]; got != true {
+		t.Fatalf("expected required_capable=true for capable backend, got %#v", meta)
 	}
 }
 

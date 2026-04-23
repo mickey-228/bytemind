@@ -52,6 +52,11 @@ Use one of the scripts below from repository root:
 
 Both scripts run focused suites first, then run `go test ./...`.
 
+CI runs the same focused acceptance suites in a cross-platform matrix:
+
+- PR workflow: `CI / Sandbox Acceptance (ubuntu-latest|macos-latest|windows-latest)`
+- Main workflow: `Main Checks / Main Sandbox Acceptance (ubuntu-latest|macos-latest|windows-latest)`
+
 ## Key Test Coverage
 
 - `internal/tools/worker_process_test.go`

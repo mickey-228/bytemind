@@ -519,12 +519,38 @@ func TestValidateRequiredWindowsShellCommandAllowsReadOnly(t *testing.T) {
 	}
 }
 
+func TestValidateRequiredWindowsShellCommandAllowsPlanSafeGoEnv(t *testing.T) {
+	if err := validateRequiredWindowsShellCommand("go env"); err != nil {
+		t.Fatalf("expected go env to be allowed in strict read-only mode, got %v", err)
+	}
+}
+
+func TestValidateRequiredWindowsShellCommandRejectsMultiSegmentReadOnly(t *testing.T) {
+	err := validateRequiredWindowsShellCommand("git status && pwd")
+	if err == nil {
+		t.Fatal("expected multi-segment command to be rejected in strict mode")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "strict read-only") {
+		t.Fatalf("expected strict read-only guard message, got %v", err)
+	}
+}
+
+func TestValidateRequiredWindowsShellCommandRejectsEchoEvenWithoutRedirection(t *testing.T) {
+	err := validateRequiredWindowsShellCommand("echo ok")
+	if err == nil {
+		t.Fatal("expected echo command to be rejected in strict mode")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "strict read-only") {
+		t.Fatalf("expected strict read-only guard message, got %v", err)
+	}
+}
+
 func TestValidateRequiredWindowsShellCommandRejectsNonReadOnly(t *testing.T) {
 	err := validateRequiredWindowsShellCommand("go test ./...")
 	if err == nil {
 		t.Fatal("expected non-read-only command to be rejected")
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "required on windows") {
+	if !strings.Contains(strings.ToLower(err.Error()), "strict read-only") {
 		t.Fatalf("expected required windows guard message, got %v", err)
 	}
 }

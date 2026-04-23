@@ -257,18 +257,24 @@ func assessShellCommand(command string) shellAssessment {
 }
 
 func validateRequiredWindowsShellCommand(command string) error {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return errors.New("system sandbox mode required on windows only permits strict read-only commands")
+	}
+	if isPlanSafeCommand(command) {
+		return nil
+	}
+
 	assessment := assessShellCommand(command)
 	switch assessment.Risk {
-	case shellRiskSafe:
-		return nil
 	case shellRiskBlocked:
-		return errors.New(assessment.Reason)
+		return errors.New("system sandbox mode required on windows blocked command: " + assessment.Reason)
 	default:
 		reason := strings.TrimSpace(assessment.Reason)
 		if reason == "" {
-			reason = "command is not read-only"
+			reason = "command is not in strict read-only allowlist"
 		}
-		return errors.New("system sandbox mode required on windows only permits read-only shell commands: " + reason)
+		return errors.New("system sandbox mode required on windows only permits strict read-only shell commands: " + reason)
 	}
 }
 

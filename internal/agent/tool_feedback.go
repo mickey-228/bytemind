@@ -158,11 +158,12 @@ func (r *Runner) renderToolFeedback(out io.Writer, name, payload string) {
 			Stdout        string `json:"stdout"`
 			Stderr        string `json:"stderr"`
 			SystemSandbox struct {
-				Mode     string `json:"mode"`
-				Backend  string `json:"backend"`
-				Active   bool   `json:"active"`
-				Fallback bool   `json:"fallback"`
-				Reason   string `json:"fallback_reason"`
+				Mode            string `json:"mode"`
+				Backend         string `json:"backend"`
+				Active          bool   `json:"active"`
+				RequiredCapable bool   `json:"required_capable"`
+				Fallback        bool   `json:"fallback"`
+				Reason          string `json:"fallback_reason"`
 			} `json:"system_sandbox"`
 		}
 		if err := json.Unmarshal([]byte(payload), &result); err == nil {
@@ -175,6 +176,7 @@ func (r *Runner) renderToolFeedback(out io.Writer, name, payload string) {
 				result.SystemSandbox.Mode,
 				result.SystemSandbox.Backend,
 				result.SystemSandbox.Active,
+				result.SystemSandbox.RequiredCapable,
 				result.SystemSandbox.Fallback,
 			); summary != "" {
 				fmt.Fprintf(out, "    sandbox: %s\n", summary)
@@ -282,10 +284,10 @@ func compactWhitespace(text string, limit int) string {
 	return string(runes[:limit-3]) + "..."
 }
 
-func formatSystemSandboxSummary(mode, backend string, active, fallback bool) string {
+func formatSystemSandboxSummary(mode, backend string, active, requiredCapable, fallback bool) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	backend = strings.TrimSpace(backend)
-	if mode == "" && backend == "" && !active && !fallback {
+	if mode == "" && backend == "" && !active && !requiredCapable && !fallback {
 		return ""
 	}
 	if mode == "" {
@@ -301,7 +303,7 @@ func formatSystemSandboxSummary(mode, backend string, active, fallback bool) str
 	} else if fallback {
 		state = "fallback"
 	}
-	return fmt.Sprintf("%s (mode=%s, backend=%s)", state, mode, backend)
+	return fmt.Sprintf("%s (mode=%s, backend=%s, required_capable=%t)", state, mode, backend, requiredCapable)
 }
 
 func normalizeApprovalErrorMessage(message, reasonCode string) string {

@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	mcpUsage = "usage: /mcp <list|show <id>|help>"
+	mcpUsage = "usage: /mcp <list|show <id>|setup <id>|help>"
 )
 
 func (m *model) runMCPCommand(input string, fields []string) error {
@@ -26,6 +26,9 @@ func (m *model) runMCPCommand(input string, fields []string) error {
 func (m *model) runMCPCommandDispatch(input string, fields []string) error {
 	if m == nil {
 		return fmt.Errorf("model is unavailable")
+	}
+	if len(fields) >= 2 && strings.EqualFold(strings.TrimSpace(fields[1]), "setup") {
+		return m.startMCPSetup(input, fields)
 	}
 	if m.async == nil {
 		return m.runMCPCommand(input, fields)
@@ -102,6 +105,9 @@ func formatMCPHelpText() string {
 		mcpUsage,
 		"- /mcp list",
 		"- /mcp show <id>",
+		"- /mcp setup <id>",
+		"  `github` id will use a built-in preset; other ids use generic setup.",
+		"  Then follow prompts and type `cancel` to abort.",
 		"- /mcp help",
 	}, "\n")
 }

@@ -283,6 +283,7 @@ var commandItems = []commandItem{
 	{Name: "/mcp list", Usage: "/mcp list", Description: "List configured MCP servers and current status.", Kind: "command"},
 	{Name: "/mcp help", Usage: "/mcp help", Description: "Show MCP command help.", Kind: "command"},
 	{Name: "/mcp show", Usage: "/mcp show <id>", Description: "Show one MCP server config and runtime state.", Kind: "command"},
+	{Name: "/mcp setup github", Usage: "/mcp setup <id>", Description: "Start guided setup for any MCP server id (`github` uses preset).", Kind: "command"},
 	{Name: "/new", Usage: "/new", Description: "Start a fresh session in this workspace.", Kind: "command"},
 	{Name: "/compact", Usage: "/compact", Description: "Compress long session history into a continuation summary.", Kind: "command"},
 	{Name: "/btw", Usage: "/btw <message>", Description: "Interject while a run is in progress.", Kind: "command"},
@@ -329,6 +330,7 @@ type model struct {
 	mentionOpen                bool
 	promptSearchOpen           bool
 	mcpCommandPending          bool
+	mcpSetup                   *mcpSetupSession
 	busy                       bool
 	runStartedAt               time.Time
 	streamingIndex             int
@@ -1331,6 +1333,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.screen = screenLanding
 			return m, nil
 		}
+		if handled, cmd, err := m.handleMCPSetupSubmission(rawValue); handled {
+			m.input.Reset()
+			m.clearPasteConfirmPending()
+			m.clearPasteBurstCapture()
+			m.syncInputOverlays()
+			if err != nil {
+				m.statusNote = err.Error()
+				return m, nil
+			}
+			return m, cmd
+		}
 		if value == "" {
 			return m, nil
 		}
@@ -2158,7 +2171,7 @@ func shouldExecuteFromPalette(item commandItem) bool {
 		return true
 	}
 	switch item.Name {
-	case "/help", "/session", "/skills", "/skill clear", "/mcp list", "/mcp help", "/new", "/compact", "/quit":
+	case "/help", "/session", "/skills", "/skill clear", "/mcp list", "/mcp help", "/mcp setup github", "/new", "/compact", "/quit":
 		return true
 	default:
 		return false

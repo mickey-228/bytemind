@@ -9,10 +9,11 @@ import (
 func TestBuildDarwinSandboxProfileIncludesCoreRulesAndWritableRoots(t *testing.T) {
 	workspace := t.TempDir()
 	writable := filepath.Join(workspace, "out")
-	profile, err := buildDarwinSandboxProfile(&ExecutionContext{
+	execCtx := &ExecutionContext{
 		Workspace:     workspace,
 		WritableRoots: []string{writable},
-	}, true)
+	}
+	profile, err := buildDarwinSandboxProfile(execCtx, true)
 	if err != nil {
 		t.Fatalf("build profile: %v", err)
 	}
@@ -28,13 +29,16 @@ func TestBuildDarwinSandboxProfileIncludesCoreRulesAndWritableRoots(t *testing.T
 	if !strings.Contains(profile, "(allow network*)") {
 		t.Fatalf("expected network allow rule when requested, got %q", profile)
 	}
-	workspaceRule := `(allow file-write* (subpath "` + escapeDarwinSandboxLiteral(filepath.Clean(workspace)) + `"))`
-	if !strings.Contains(profile, workspaceRule) {
-		t.Fatalf("expected workspace writable rule, got %q", profile)
+
+	roots, err := darwinSandboxWritableRoots(execCtx)
+	if err != nil {
+		t.Fatalf("resolve writable roots: %v", err)
 	}
-	writableRule := `(allow file-write* (subpath "` + escapeDarwinSandboxLiteral(filepath.Clean(writable)) + `"))`
-	if !strings.Contains(profile, writableRule) {
-		t.Fatalf("expected writable root rule, got %q", profile)
+	for _, root := range roots {
+		rule := `(allow file-write* (subpath "` + escapeDarwinSandboxLiteral(root) + `"))`
+		if !strings.Contains(profile, rule) {
+			t.Fatalf("expected writable root rule %q, got %q", rule, profile)
+		}
 	}
 }
 

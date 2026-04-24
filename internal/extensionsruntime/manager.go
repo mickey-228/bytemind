@@ -48,7 +48,7 @@ func NewManager(workspace, configPath string, base extensionspkg.Manager, cfg co
 		disabledMCP: map[string]struct{}{},
 		entries:     map[string]*mcpEntry{},
 	}
-	manager.applyConfig(cfg.MCP, false)
+	manager.applyConfig(cfg.MCP)
 	return manager
 }
 
@@ -363,7 +363,7 @@ func (m *Manager) refresh(ctx context.Context, force bool) error {
 	if err != nil {
 		return err
 	}
-	m.applyConfig(cfg.MCP, force)
+	m.applyConfig(cfg.MCP)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -420,7 +420,7 @@ func (m *Manager) refresh(ctx context.Context, force bool) error {
 	return firstErr
 }
 
-func (m *Manager) applyConfig(cfg configpkg.MCPConfig, force bool) {
+func (m *Manager) applyConfig(cfg configpkg.MCPConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -468,7 +468,11 @@ func (m *Manager) applyConfig(cfg configpkg.MCPConfig, force bool) {
 			continue
 		}
 
-		ext, err := mcppkg.FromMCPServer(clientCfg, mcppkg.WithRefreshTTL(refreshTTL))
+		ext, err := mcppkg.FromMCPServer(
+			clientCfg,
+			mcppkg.WithRefreshTTL(refreshTTL),
+			mcppkg.WithEagerDiscover(false),
+		)
 		if err != nil {
 			if m.health != nil {
 				m.health.RecordFailure(extensionID)
@@ -486,20 +490,8 @@ func (m *Manager) applyConfig(cfg configpkg.MCPConfig, force bool) {
 
 		info := normalizeMCPInfo(ext.Info(), server, now)
 		if m.health != nil {
-			if force {
-				if reloader, ok := ext.(interface{ Reload(context.Context) error }); ok {
-					if err := reloader.Reload(context.Background()); err != nil {
-						snapshot := m.health.RecordFailure(extensionID)
-						info = applyIsolationSnapshot(normalizeMCPInfo(ext.Info(), server, now), snapshot, err, now)
-					} else {
-						snapshot := m.health.RecordSuccess(extensionID)
-						info = applyIsolationSnapshot(normalizeMCPInfo(ext.Info(), server, now), snapshot, nil, now)
-					}
-				}
-			} else {
-				snapshot := m.health.Snapshot(extensionID)
-				info = applyIsolationSnapshot(info, snapshot, nil, now)
-			}
+			snapshot := m.health.Snapshot(extensionID)
+			info = applyIsolationSnapshot(info, snapshot, nil, now)
 		}
 		nextEntries[extensionID] = &mcpEntry{
 			server:      server,

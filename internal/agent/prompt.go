@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	planpkg "bytemind/internal/plan"
 )
 
 const (
@@ -62,6 +64,7 @@ type PromptInput struct {
 	Now                          time.Time
 	Skills                       []PromptSkill
 	Tools                        []string
+	Plan                         planpkg.State
 	ActiveSkill                  *PromptActiveSkill
 	Instruction                  string
 }
@@ -203,6 +206,9 @@ func renderSystemBlock(input PromptInput) string {
 		"",
 		"[Available Tools]",
 		formatTools(input.Tools),
+	}
+	if planState := strings.TrimSpace(planpkg.RenderPromptStateBlock(input.Plan)); planState != "" {
+		lines = append(lines, "", "[Current Plan State]", planState)
 	}
 	if systemSandboxStatus != "" {
 		lines = append(lines, "", fmt.Sprintf("system_sandbox_status: %s", systemSandboxStatus))

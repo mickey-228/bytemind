@@ -489,10 +489,6 @@ func (m *Manager) applyConfig(cfg configpkg.MCPConfig) {
 		}
 
 		info := normalizeMCPInfo(ext.Info(), server, now)
-		if m.health != nil {
-			snapshot := m.health.Snapshot(extensionID)
-			info = applyIsolationSnapshot(info, snapshot, nil, now)
-		}
 		nextEntries[extensionID] = &mcpEntry{
 			server:      server,
 			clientCfg:   clientCfg,

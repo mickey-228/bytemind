@@ -1034,6 +1034,53 @@ func TestLoadAppliesMCPDefaultsAndNormalization(t *testing.T) {
 	}
 }
 
+func TestLoadReadsProjectMCPFile(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+
+	if err := writeConfig(projectConfigPath(workspace), map[string]any{
+		"provider": minimalProviderConfigDoc("gpt-5.4-mini", "test-key"),
+		"mcp": map[string]any{
+			"enabled": false,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpPath := filepath.Join(workspace, ".bytemind", "mcp.json")
+	if err := writeConfig(mcpPath, map[string]any{
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": []map[string]any{
+				{
+					"id": "Docs",
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "npx",
+						"args":    []string{"-y", "@modelcontextprotocol/server-filesystem"},
+					},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.MCP.Enabled {
+		t.Fatal("expected mcp.enabled=true from .bytemind/mcp.json")
+	}
+	if len(cfg.MCP.Servers) != 1 {
+		t.Fatalf("expected one server from .bytemind/mcp.json, got %#v", cfg.MCP.Servers)
+	}
+	if cfg.MCP.Servers[0].ID != "docs" {
+		t.Fatalf("expected normalized server id docs, got %q", cfg.MCP.Servers[0].ID)
+	}
+}
+
 func TestLoadRejectsDuplicateNormalizedMCPServerID(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("BYTEMIND_HOME", t.TempDir())

@@ -222,6 +222,11 @@ func Load(workspace, configPath string) (Config, error) {
 				return cfg, err
 			}
 		}
+		if projectMCPConfig := resolveProjectMCPConfigPath(workspace); projectMCPConfig != "" {
+			if err := mergeMCPConfigFromFile(projectMCPConfig, &cfg.MCP); err != nil {
+				return cfg, err
+			}
+		}
 	}
 
 	applyEnv(&cfg)
@@ -371,6 +376,18 @@ func resolveProjectConfigPath(workspace string) string {
 	return ""
 }
 
+func resolveProjectMCPConfigPath(workspace string) string {
+	candidates := []string{
+		filepath.Join(workspace, ".bytemind", "mcp.json"),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
+}
+
 func resolveUserConfigPath() (string, error) {
 	home, err := ResolveHomeDir()
 	if err != nil {
@@ -389,6 +406,32 @@ func mergeConfigFromFile(path string, cfg *Config) error {
 		return err
 	}
 	if err := json.Unmarshal(data, cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func mergeMCPConfigFromFile(path string, cfg *MCPConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return nil
+	}
+
+	payload := data
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err == nil {
+		if nested, ok := root["mcp"]; ok && len(nested) > 0 {
+			payload = nested
+		}
+	}
+
+	if err := json.Unmarshal(payload, cfg); err != nil {
 		return err
 	}
 	return nil

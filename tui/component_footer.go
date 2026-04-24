@@ -31,6 +31,8 @@ func renderFooterDefault(m model) string {
 		parts = append(parts, m.renderMentionPalette())
 	} else if m.commandOpen {
 		parts = append(parts, m.renderCommandPalette())
+	} else if m.planActionOpen {
+		parts = append(parts, m.renderPlanActionPicker())
 	}
 	if banner := m.renderActiveSkillBanner(); banner != "" {
 		parts = append(parts, banner)

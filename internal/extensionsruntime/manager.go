@@ -271,13 +271,17 @@ func (m *Manager) Test(ctx context.Context, extensionID string) (extensionspkg.H
 	if m.health != nil && !m.health.AllowProbe(normalizedID) {
 		snapshot := m.health.Snapshot(normalizedID)
 		now := time.Now().UTC()
-		info := applyIsolationSnapshot(entry.info, snapshot, circuitOpenError(normalizedID, snapshot), now)
-		return info.Health, entry.lastErr
+		err := circuitOpenError(normalizedID, snapshot)
+		info := applyIsolationSnapshot(entry.info, snapshot, err, now)
+		return info.Health, err
 	}
 
 	if entry.extension != nil {
 		if reloader, ok := entry.extension.(interface{ Reload(context.Context) error }); ok {
-			if err := reloader.Reload(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			if err := reloader.Reload(ctx); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return extensionspkg.HealthSnapshot{}, err
+				}
 				snapshot := extensionspkg.IsolationSnapshot{}
 				if m.health != nil {
 					snapshot = m.health.RecordFailure(normalizedID)

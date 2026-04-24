@@ -388,6 +388,102 @@ func TestManagerResolveAllToolsContextErrorAndTestUsesExtensionHealth(t *testing
 	}
 }
 
+func TestManagerTestReturnsCircuitOpenErrorWhenIsolated(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"extensions": map[string]any{
+			"failure_threshold":     1,
+			"recovery_cooldown_sec": 30,
+		},
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": []map[string]any{
+				{
+					"id": "local",
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "cmd",
+						"args":    []string{"/c", "echo", "ok"},
+					},
+				},
+			},
+		},
+	})
+
+	manager := NewManager(workspace, "", extensionspkg.NopManager{}, loadRuntimeConfig(t, workspace))
+	if manager.health == nil {
+		t.Fatal("expected health manager")
+	}
+	manager.health.RecordFailure("mcp.local")
+
+	_, err := manager.Test(context.Background(), "mcp.local")
+	if err == nil {
+		t.Fatal("expected circuit-open error")
+	}
+	if !strings.Contains(err.Error(), "circuit open") {
+		t.Fatalf("expected circuit-open error, got %v", err)
+	}
+}
+
+func TestManagerTestReloadContextErrorReturnsImmediately(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": []map[string]any{
+				{
+					"id": "local",
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "cmd",
+						"args":    []string{"/c", "echo", "ok"},
+					},
+				},
+			},
+		},
+	})
+
+	manager := NewManager(workspace, "", extensionspkg.NopManager{}, loadRuntimeConfig(t, workspace))
+	entry := manager.entries["mcp.local"]
+	if entry == nil {
+		t.Fatal("expected local entry")
+	}
+	localExt := &fakeMCPRuntimeExtension{
+		info: extensionspkg.ExtensionInfo{
+			ID:     "mcp.local",
+			Kind:   extensionspkg.ExtensionMCP,
+			Status: extensionspkg.ExtensionStatusActive,
+		},
+		reloadErr: context.Canceled,
+		health: extensionspkg.HealthSnapshot{
+			Status: extensionspkg.ExtensionStatusActive,
+		},
+	}
+	entry.extension = localExt
+
+	_, err := manager.Test(context.Background(), "mcp.local")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if localExt.healthCalls != 0 {
+		t.Fatalf("expected health not to run after reload cancellation, got %d calls", localExt.healthCalls)
+	}
+}
+
 func TestManagerLoadDoesNotFailFromOtherServerReloadError(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("BYTEMIND_HOME", t.TempDir())
@@ -760,6 +856,7 @@ type fakeMCPRuntimeExtension struct {
 	resolveCalls    int
 	health          extensionspkg.HealthSnapshot
 	healthErr       error
+	healthCalls     int
 	reloadErr       error
 	reloadCalls     int
 	invalidateCalls int
@@ -775,6 +872,7 @@ func (f *fakeMCPRuntimeExtension) ResolveTools(context.Context) ([]extensionspkg
 }
 
 func (f *fakeMCPRuntimeExtension) Health(context.Context) (extensionspkg.HealthSnapshot, error) {
+	f.healthCalls++
 	return f.health, f.healthErr
 }
 

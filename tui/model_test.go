@@ -2975,19 +2975,39 @@ func TestRenderFooterInfoLineCombinesModeAndHints(t *testing.T) {
 	}
 }
 
-func TestRenderFooterDoesNotShowBusyRunIndicator(t *testing.T) {
+func TestRenderFooterShowsBusyRunIndicator(t *testing.T) {
 	input := textarea.New()
 	m := model{
-		width:        120,
-		input:        input,
-		busy:         true,
-		phase:        "thinking",
-		runStartedAt: time.Time{},
+		width:             120,
+		input:             input,
+		busy:              true,
+		phase:             "thinking",
+		runStartedAt:      time.Date(2026, 4, 24, 10, 0, 0, 0, time.UTC),
+		runIndicatorState: runIndicatorRunning,
 	}
 
 	footer := m.renderFooter()
-	if strings.Contains(footer, "thinking...") || strings.Contains(footer, "(00:00)") {
-		t.Fatalf("expected busy footer not to include run indicator, got %q", footer)
+	for _, want := range []string{"Thinking", "thinking..."} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("expected busy footer to include %q, got %q", want, footer)
+		}
+	}
+}
+
+func TestRenderFooterShowsCompletedRunIndicator(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		width:             120,
+		input:             input,
+		runIndicatorState: runIndicatorComplete,
+		lastRunDuration:   28 * time.Second,
+	}
+
+	footer := m.renderFooter()
+	for _, want := range []string{"Complete", "(00:28)"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("expected completed footer to include %q, got %q", want, footer)
+		}
 	}
 }
 
@@ -4640,6 +4660,29 @@ func TestFinishAssistantMessageAppendsFinalCardAfterThinking(t *testing.T) {
 	}
 }
 
+func TestRenderConversationOmitsThinkingRowsFromViewport(t *testing.T) {
+	m := model{
+		width: 120,
+		viewport: func() viewport.Model {
+			vp := viewport.New(60, 10)
+			return vp
+		}(),
+		chatItems: []chatEntry{
+			{Kind: "user", Title: "You", Body: "inspect repo", Status: "final"},
+			{Kind: "assistant", Title: thinkingLabel, Body: "thinking...", Status: "thinking_done"},
+			{Kind: "assistant", Title: assistantLabel, Body: "Done.", Status: "final"},
+		},
+	}
+
+	rendered := m.renderConversation()
+	if strings.Contains(rendered, "thinking...") {
+		t.Fatalf("expected conversation viewport to omit inline thinking rows, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Done.") {
+		t.Fatalf("expected final answer to remain visible, got %q", rendered)
+	}
+}
+
 func TestApprovalBannerRendersAboveInput(t *testing.T) {
 	input := textarea.New()
 	m := model{
@@ -4653,10 +4696,11 @@ func TestApprovalBannerRendersAboveInput(t *testing.T) {
 
 	footer := m.renderFooter()
 	for _, want := range []string{
+		"Approval required",
 		"go test ./tui",
 		"run tests",
-		"Y / Enter",
-		"N / Esc",
+		"Approve [Y/Enter]",
+		"Reject [N/Esc]",
 	} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("expected approval banner to contain %q", want)
@@ -4664,6 +4708,87 @@ func TestApprovalBannerRendersAboveInput(t *testing.T) {
 	}
 	if strings.Contains(footer, "Approval Request") {
 		t.Fatalf("did not expect old centered approval modal title in footer")
+	}
+}
+
+func TestApprovalBannerUsesCompactSingleNormalBorder(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		width: 64,
+		input: input,
+		approval: &approvalPrompt{
+			Command: "write_file_with_a_very_long_tool_name_to_force_truncation",
+			Reason:  "destructive tool may modify workspace files: write_file_with_a_very_long_tool_name_to_force_truncation",
+		},
+	}
+
+	banner := m.renderApprovalBanner()
+	if strings.ContainsAny(banner, "╭╮╰╯") {
+		t.Fatalf("expected normal single border without rounded corners, got %q", banner)
+	}
+	lines := strings.Split(banner, "\n")
+	if len(lines) != 6 {
+		t.Fatalf("expected medium-height boxed approval banner with top/bottom padding, got %d lines: %q", len(lines), banner)
+	}
+	expectedWidth := max(24, m.chatPanelInnerWidth())
+	for i, line := range lines {
+		if got := lipgloss.Width(line); got != expectedWidth {
+			t.Fatalf("expected banner line %d width %d, got %d (%q)", i, expectedWidth, got, line)
+		}
+	}
+	for _, want := range []string{"Tool:", "Approve [Y/Enter]", "Reject [N/Esc]"} {
+		if !strings.Contains(banner, want) {
+			t.Fatalf("expected compact approval banner to contain %q", want)
+		}
+	}
+}
+
+func TestApprovalBannerDefaultsWhenCommandAndReasonEmpty(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		width: 80,
+		input: input,
+		approval: &approvalPrompt{
+			Command: "   ",
+			Reason:  "   ",
+		},
+	}
+
+	banner := m.renderApprovalBanner()
+	if !strings.Contains(banner, "Approval required") {
+		t.Fatalf("expected approval title in banner, got %q", banner)
+	}
+	if !strings.Contains(banner, "Tool: -") {
+		t.Fatalf("expected empty command to fallback to '-', got %q", banner)
+	}
+	if !strings.Contains(banner, "Approve [Y/Enter]") || !strings.Contains(banner, "Reject [N/Esc]") {
+		t.Fatalf("expected approval actions to render, got %q", banner)
+	}
+}
+
+func TestApprovalBannerNarrowWidthFallbackKeepsAlignedHint(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		width: 24,
+		input: input,
+		approval: &approvalPrompt{
+			Command: "very_long_destructive_tool_name_for_narrow_layout",
+			Reason:  "destructive tool may modify workspace files: very_long_destructive_tool_name_for_narrow_layout",
+		},
+	}
+
+	banner := m.renderApprovalBanner()
+	lines := strings.Split(banner, "\n")
+	expectedWidth := max(24, m.chatPanelInnerWidth())
+	for i, line := range lines {
+		if got := lipgloss.Width(line); got != expectedWidth {
+			t.Fatalf("expected banner line %d width %d under narrow layout, got %d (%q)", i, expectedWidth, got, line)
+		}
+	}
+	for _, want := range []string{"Approve", "[Y/Enter]", "Reject", "[N/Esc]"} {
+		if !strings.Contains(banner, want) {
+			t.Fatalf("expected narrow-layout fallback to keep action hint token %q, got %q", want, banner)
+		}
 	}
 }
 

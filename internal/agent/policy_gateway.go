@@ -25,6 +25,7 @@ type ToolDecisionInput struct {
 	DeniedTools          map[string]struct{}
 	ApprovalPolicy       string
 	SafetyClass          tools.SafetyClass
+	SandboxEnabled       bool
 	SandboxMode          string
 	SandboxBackend       string
 	SandboxCapability    string
@@ -120,6 +121,9 @@ func (defaultPolicyGateway) DecideTool(_ context.Context, in ToolDecisionInput) 
 }
 
 func decideBySandboxGuard(in ToolDecisionInput) (ToolDecision, bool) {
+	if !in.SandboxEnabled {
+		return ToolDecision{}, false
+	}
 	mode := strings.ToLower(strings.TrimSpace(in.SandboxMode))
 	if mode != "required" {
 		return ToolDecision{}, false

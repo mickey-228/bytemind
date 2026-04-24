@@ -71,6 +71,7 @@ func (e *defaultEngine) executeToolCall(
 		DeniedTools:          deniedTools,
 		ApprovalPolicy:       runner.config.ApprovalPolicy,
 		SafetyClass:          e.toolSafetyClass(call.Function.Name),
+		SandboxEnabled:       sandboxAudit.Enabled,
 		SandboxMode:          sandboxAudit.Mode,
 		SandboxBackend:       sandboxAudit.Backend,
 		SandboxCapability:    sandboxAudit.CapabilityLevel,

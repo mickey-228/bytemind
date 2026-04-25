@@ -575,13 +575,17 @@ func resolveMouseYOffset() int {
 }
 
 func (m model) Init() tea.Cmd {
+	landingTick := tea.Cmd(nil)
+	if m.screen == screenLanding {
+		landingTick = landingGlowTickCmd()
+	}
 	return tea.Batch(
 		tea.EnableBracketedPaste,
 		textarea.Blink,
 		waitForAsync(m.async),
 		m.tokenUsage.tickCmd(),
 		m.loadSessionsCmd(),
-		landingGlowTickCmd(),
+		landingTick,
 	)
 }
 
@@ -589,6 +593,13 @@ func landingGlowTickCmd() tea.Cmd {
 	return tea.Tick(landingGlowTickInterval, func(time.Time) tea.Msg {
 		return landingGlowTickMsg{}
 	})
+}
+
+func (m model) startLandingGlowOnTransition(previous screenKind) tea.Cmd {
+	if previous != screenLanding && m.screen == screenLanding {
+		return landingGlowTickCmd()
+	}
+	return nil
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -800,6 +811,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd, _ := m.tokenUsage.Update(msg)
 		return m, cmd
 	case landingGlowTickMsg:
+		if m.screen != screenLanding {
+			return m, nil
+		}
 		m.landingGlowStep = (m.landingGlowStep + 1) % 2048
 		return m, landingGlowTickCmd()
 	case tea.MouseMsg:
@@ -1286,12 +1300,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.syncInputOverlays()
 		return m, nil
 	case "ctrl+n":
+		previousScreen := m.screen
 		if !m.busy && m.screen == screenChat {
 			if err := m.newSession(); err != nil {
 				m.statusNote = err.Error()
 			}
 		}
-		return m, m.loadSessionsCmd()
+		return m, tea.Batch(m.loadSessionsCmd(), m.startLandingGlowOnTransition(previousScreen))
 	case "home":
 		m.viewport.GotoTop()
 		m.syncCopyViewOffset()
@@ -1355,11 +1370,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		value := strings.TrimSpace(rawValue)
 		if m.startupGuide.Active && !strings.HasPrefix(value, "/") {
+			previousScreen := m.screen
 			if err := m.handleStartupGuideSubmission(rawValue); err != nil {
 				m.statusNote = err.Error()
 			}
 			m.screen = screenLanding
-			return m, nil
+			return m, m.startLandingGlowOnTransition(previousScreen)
 		}
 		if handled, cmd, err := m.handleMCPSetupSubmission(rawValue); handled {
 			m.input.Reset()

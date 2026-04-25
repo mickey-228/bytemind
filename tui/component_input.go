@@ -9,9 +9,15 @@ import (
 )
 
 func (m model) landingInputShellWidth() int {
-	maxFit := max(52, m.width-16)
+	if m.width <= 0 {
+		return 52
+	}
+	maxFit := max(1, m.width-16)
 	preferred := max(58, (m.width*2)/3)
 	maxPreferred := 104
+	if maxFit < 52 {
+		return maxFit
+	}
 	return clamp(min(preferred, maxPreferred), 52, maxFit)
 }
 
@@ -29,7 +35,7 @@ func (m model) chatInputContentWidth() int {
 
 func (m model) landingInputContentWidth() int {
 	width := m.landingInputShellWidth() - landingInputStyle.GetHorizontalFrameSize()
-	return max(44, width)
+	return max(1, width)
 }
 
 func (m model) inputBorderStyle() lipgloss.Style {

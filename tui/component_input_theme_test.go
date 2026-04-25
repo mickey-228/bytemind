@@ -33,3 +33,20 @@ func TestApplyInputThemesAllowNilModelReceiver(t *testing.T) {
 	m.applyDefaultInputTheme()
 	m.applyLandingInputTheme()
 }
+
+func TestLandingInputShellWidthCapsToAvailableWidth(t *testing.T) {
+	m := model{width: 40}
+	if got := m.landingInputShellWidth(); got != 24 {
+		t.Fatalf("expected shell width 24 for narrow terminal width 40, got %d", got)
+	}
+}
+
+func TestLandingInputContentWidthNeverExceedsShell(t *testing.T) {
+	m := model{width: 40}
+	shell := m.landingInputShellWidth()
+	content := m.landingInputContentWidth()
+	frame := landingInputStyle.GetHorizontalFrameSize()
+	if content > max(1, shell-frame) {
+		t.Fatalf("expected content width <= shell-frame, shell=%d frame=%d content=%d", shell, frame, content)
+	}
+}

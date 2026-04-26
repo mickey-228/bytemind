@@ -48,7 +48,7 @@ type Config struct {
 	TokenQuota        int                   `json:"token_quota"`
 	TokenUsage        TokenUsageConfig      `json:"token_usage"`
 	ContextBudget     ContextBudgetConfig   `json:"context_budget"`
-	MCP               MCPConfig             `json:"mcp"`
+	MCP               MCPConfig             `json:"-"`
 }
 
 type UpdateCheckConfig struct {
@@ -198,6 +198,10 @@ func Default(workspace string) Config {
 }
 
 func Load(workspace, configPath string) (Config, error) {
+	return LoadWithMCPConfigPath(workspace, configPath, "")
+}
+
+func LoadWithMCPConfigPath(workspace, configPath, mcpConfigPath string) (Config, error) {
 	cfg := Default(workspace)
 
 	if strings.TrimSpace(configPath) != "" {
@@ -219,6 +223,29 @@ func Load(workspace, configPath string) (Config, error) {
 
 		if projectConfig := resolveProjectConfigPath(workspace); projectConfig != "" {
 			if err := mergeConfigFromFile(projectConfig, &cfg); err != nil {
+				return cfg, err
+			}
+		}
+	}
+
+	if strings.TrimSpace(mcpConfigPath) != "" {
+		path, err := filepath.Abs(mcpConfigPath)
+		if err != nil {
+			return cfg, err
+		}
+		if err := mergeMCPConfigFromFile(path, &cfg.MCP); err != nil {
+			return cfg, err
+		}
+	} else {
+		if userMCPConfig, err := resolveUserMCPConfigPath(); err != nil {
+			return cfg, err
+		} else if userMCPConfig != "" {
+			if err := mergeMCPConfigFromFile(userMCPConfig, &cfg.MCP); err != nil {
+				return cfg, err
+			}
+		}
+		if projectMCPConfig := resolveProjectMCPConfigPath(workspace); projectMCPConfig != "" {
+			if err := mergeMCPConfigFromFile(projectMCPConfig, &cfg.MCP); err != nil {
 				return cfg, err
 			}
 		}
@@ -330,11 +357,6 @@ func ensureDefaultConfigFile(home string) error {
 			CriticalRatio:    DefaultContextBudgetCriticalRatio,
 			MaxReactiveRetry: DefaultContextBudgetMaxReactiveRetry,
 		},
-		MCP: MCPConfig{
-			Enabled:        false,
-			SyncTTLSeconds: DefaultMCPSyncTTLSeconds,
-			Servers:        nil,
-		},
 	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -371,6 +393,18 @@ func resolveProjectConfigPath(workspace string) string {
 	return ""
 }
 
+func resolveProjectMCPConfigPath(workspace string) string {
+	candidates := []string{
+		filepath.Join(workspace, ".bytemind", "mcp.json"),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
+}
+
 func resolveUserConfigPath() (string, error) {
 	home, err := ResolveHomeDir()
 	if err != nil {
@@ -383,11 +417,48 @@ func resolveUserConfigPath() (string, error) {
 	return "", nil
 }
 
+func resolveUserMCPConfigPath() (string, error) {
+	home, err := ResolveHomeDir()
+	if err != nil {
+		return "", err
+	}
+	candidate := filepath.Join(home, "mcp.json")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate, nil
+	}
+	return "", nil
+}
+
 func mergeConfigFromFile(path string, cfg *Config) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func mergeMCPConfigFromFile(path string, cfg *MCPConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return nil
+	}
+
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err == nil {
+		if _, ok := root["mcp"]; ok {
+			return errors.New("mcp config files must use top-level MCP fields; move mcp.* to the root")
+		}
+	}
+
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return err
 	}

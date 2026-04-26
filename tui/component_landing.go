@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone"
 )
 
@@ -245,7 +246,7 @@ func (m model) renderLandingCanvasRow(line string, row int) string {
 	}
 	lineWidth := lipgloss.Width(line)
 	if lineWidth >= m.width {
-		return line
+		return xansi.Cut(line, 0, m.width)
 	}
 	left := max(0, (m.width-lineWidth)/2)
 	right := max(0, m.width-left-lineWidth)

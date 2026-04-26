@@ -157,3 +157,24 @@ func TestRenderLandingCanvasUsesLandingContentTop(t *testing.T) {
 		t.Fatalf("expected first content row at %d, got %d", want, got)
 	}
 }
+
+func TestRenderLandingCanvasClampsRowWidthOnNarrowTerminal(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	m := model{
+		screen: screenLanding,
+		width:  72,
+		height: 32,
+		mode:   modeBuild,
+		input:  input,
+	}
+	m.syncInputStyle()
+
+	rendered := m.renderLandingCanvas(m.renderLandingContent(false))
+	lines := strings.Split(strings.ReplaceAll(rendered, "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		if got := xansi.StringWidth(line); got > m.width {
+			t.Fatalf("expected row width <= %d at row %d, got %d", m.width, i, got)
+		}
+	}
+}

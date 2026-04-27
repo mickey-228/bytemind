@@ -462,6 +462,16 @@ var (
 				Background(lipgloss.Color("#111824")).
 				Padding(0, 1)
 
+	approvalOptionStyle = lipgloss.NewStyle().
+				Foreground(semanticColors.TextBase)
+
+	approvalOptionSelectedStyle = lipgloss.NewStyle().
+					Foreground(semanticColors.Accent).
+					Bold(true)
+
+	approvalOptionDescriptionStyle = lipgloss.NewStyle().
+					Foreground(semanticColors.TextMuted)
+
 	activeSkillBannerStyle = lipgloss.NewStyle().
 				BorderStyle(lipgloss.NormalBorder()).
 				BorderForeground(semanticColors.Accent).

@@ -35,7 +35,7 @@ const (
 	scrollStep                 = 3
 	scrollbarWidth             = 1
 	mouseZoneAutoProbeMaxDelta = 4
-	commandPageSize            = 3
+	commandPageSize            = 5
 	mentionPageSize            = 5
 	maxPendingBTW              = 5
 	promptSearchPageSize       = 5
@@ -162,13 +162,15 @@ type toolRun struct {
 }
 
 type approvalPrompt struct {
-	Command string
-	Reason  string
-	Reply   chan approvalDecision
+	ToolName string
+	Command  string
+	Reason   string
+	Cursor   int
+	Reply    chan approvalDecision
 }
 
 type approvalDecision struct {
-	Approved bool
+	Decision ApprovalDecision
 	Err      error
 }
 
@@ -197,6 +199,12 @@ const (
 type approvalRequestMsg struct {
 	Request ApprovalRequest
 	Reply   chan approvalDecision
+}
+
+type approvalOption struct {
+	Label       string
+	Description string
+	Decision    ApprovalDisposition
 }
 
 type promptHistoryLoadedMsg struct {
@@ -324,6 +332,8 @@ type model struct {
 	phase                      string
 	llmConnected               bool
 	approval                   *approvalPrompt
+	sessionApprovalAll         bool
+	sessionApprovedTools       map[string]struct{}
 	mentionQuery               string
 	mentionToken               mention.Token
 	mentionResults             []mention.Candidate
@@ -436,11 +446,11 @@ func newModel(opts Options) model {
 		opts.Runner.SetObserver(func(event Event) {
 			async <- agentEventMsg{Event: event}
 		})
-		opts.Runner.SetApprovalHandler(func(req ApprovalRequest) (bool, error) {
+		opts.Runner.SetApprovalHandler(func(req ApprovalRequest) (ApprovalDecision, error) {
 			reply := make(chan approvalDecision, 1)
 			async <- approvalRequestMsg{Request: req, Reply: reply}
 			decision := <-reply
-			return decision.Approved, decision.Err
+			return NormalizeApprovalDecision(decision.Decision), decision.Err
 		})
 	}
 
@@ -468,6 +478,7 @@ func newModel(opts Options) model {
 		statusNote:           "Ready.",
 		phase:                "idle",
 		llmConnected:         true,
+		sessionApprovedTools: make(map[string]struct{}),
 		chatAutoFollow:       true,
 		mentionIndex:         mention.NewWorkspaceFileIndex(opts.Workspace),
 		tokenUsage:           newTokenUsageComponent(),
@@ -513,11 +524,11 @@ func (m *model) installApprovalBridge() {
 		return
 	}
 	async := m.async
-	m.runner.SetApprovalHandler(func(req ApprovalRequest) (bool, error) {
+	m.runner.SetApprovalHandler(func(req ApprovalRequest) (ApprovalDecision, error) {
 		reply := make(chan approvalDecision, 1)
 		async <- approvalRequestMsg{Request: req, Reply: reply}
 		decision := <-reply
-		return decision.Approved, decision.Err
+		return NormalizeApprovalDecision(decision.Decision), decision.Err
 	})
 }
 
@@ -537,6 +548,75 @@ func resolveMouseYOffset() int {
 		return 0
 	}
 	return clamp(value, -10, 10)
+}
+
+func approvalToolKey(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func (m model) approvalOptions() []approvalOption {
+	return []approvalOption{
+		{
+			Label:       "Approve this operation only",
+			Description: "Allow just the current request; the same tool will ask again the next time approval is needed.",
+			Decision:    ApprovalApproveOnce,
+		},
+		{
+			Label:       "Approve later requests from this tool",
+			Description: "Auto-approve later approval requests from the same tool for the rest of this TUI session.",
+			Decision:    ApprovalApproveSameToolSession,
+		},
+		{
+			Label:       "Disable approvals for this TUI session",
+			Description: "Auto-approve all later approval requests in this TUI session without changing global config.",
+			Decision:    ApprovalApproveAllSession,
+		},
+	}
+}
+
+func (m *model) resetSessionApprovalState() {
+	if m == nil {
+		return
+	}
+	m.sessionApprovalAll = false
+	m.sessionApprovedTools = make(map[string]struct{})
+}
+
+func (m *model) cachedApprovalDecision(req ApprovalRequest) (ApprovalDecision, bool) {
+	if m == nil {
+		return ApprovalDecision{}, false
+	}
+	if m.sessionApprovalAll {
+		return ApprovalDecision{Disposition: ApprovalApproveAllSession}, true
+	}
+	toolKey := approvalToolKey(req.ToolName)
+	if toolKey == "" {
+		return ApprovalDecision{}, false
+	}
+	if _, ok := m.sessionApprovedTools[toolKey]; ok {
+		return ApprovalDecision{Disposition: ApprovalApproveSameToolSession}, true
+	}
+	return ApprovalDecision{}, false
+}
+
+func (m *model) rememberApprovalDecision(req ApprovalRequest, decision ApprovalDecision) {
+	if m == nil {
+		return
+	}
+	decision = NormalizeApprovalDecision(decision)
+	switch decision.Disposition {
+	case ApprovalApproveAllSession:
+		m.sessionApprovalAll = true
+	case ApprovalApproveSameToolSession:
+		toolKey := approvalToolKey(req.ToolName)
+		if toolKey == "" {
+			return
+		}
+		if m.sessionApprovedTools == nil {
+			m.sessionApprovedTools = make(map[string]struct{})
+		}
+		m.sessionApprovedTools[toolKey] = struct{}{}
+	}
 }
 
 func (m model) Init() tea.Cmd {
@@ -639,10 +719,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, tea.Batch(waitForAsync(m.async), m.loadSessionsCmd())
 	case approvalRequestMsg:
+		if decision, ok := m.cachedApprovalDecision(msg.Request); ok {
+			msg.Reply <- approvalDecision{Decision: decision}
+			return m, waitForAsync(m.async)
+		}
 		m.approval = &approvalPrompt{
-			Command: msg.Request.Command,
-			Reason:  msg.Request.Reason,
-			Reply:   msg.Reply,
+			ToolName: msg.Request.ToolName,
+			Command:  msg.Request.Command,
+			Reason:   msg.Request.Reason,
+			Cursor:   0,
+			Reply:    msg.Reply,
 		}
 		m.statusNote = "Approval required."
 		m.phase = "approval"
@@ -1039,7 +1125,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.copyCurrentSelection()
 		}
 		if m.approval != nil {
-			m.approval.Reply <- approvalDecision{Approved: false}
+			m.approval.Reply <- approvalDecision{Decision: ApprovalDecision{Disposition: ApprovalDeny}}
 		}
 		if m.runCancel != nil {
 			m.runCancel()
@@ -1099,14 +1185,35 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.approval != nil {
 		switch msg.String() {
-		case "y", "Y", "enter":
-			m.approval.Reply <- approvalDecision{Approved: true}
-			m.statusNote = "Shell command approved."
+		case "up", "k":
+			m.approval.Cursor = clamp(m.approval.Cursor-1, 0, len(m.approvalOptions())-1)
+		case "down", "j":
+			m.approval.Cursor = clamp(m.approval.Cursor+1, 0, len(m.approvalOptions())-1)
+		case "y", "Y":
+			m.rememberApprovalDecision(ApprovalRequest{ToolName: m.approval.ToolName, Command: m.approval.Command, Reason: m.approval.Reason}, ApprovalDecision{Disposition: ApprovalApproveOnce})
+			m.approval.Reply <- approvalDecision{Decision: ApprovalDecision{Disposition: ApprovalApproveOnce}}
+			m.statusNote = "Approved current operation."
+			m.phase = "tool"
+			m.approval = nil
+		case "enter":
+			options := m.approvalOptions()
+			selected := options[clamp(m.approval.Cursor, 0, len(options)-1)]
+			decision := ApprovalDecision{Disposition: selected.Decision}
+			m.rememberApprovalDecision(ApprovalRequest{ToolName: m.approval.ToolName, Command: m.approval.Command, Reason: m.approval.Reason}, decision)
+			m.approval.Reply <- approvalDecision{Decision: decision}
+			switch selected.Decision {
+			case ApprovalApproveAllSession:
+				m.statusNote = "Session approvals disabled for this TUI session."
+			case ApprovalApproveSameToolSession:
+				m.statusNote = "Future approvals for this tool will auto-pass in this session."
+			default:
+				m.statusNote = "Approved current operation."
+			}
 			m.phase = "tool"
 			m.approval = nil
 		case "n", "N", "esc":
-			m.approval.Reply <- approvalDecision{Approved: false}
-			m.statusNote = "Shell command rejected."
+			m.approval.Reply <- approvalDecision{Decision: ApprovalDecision{Disposition: ApprovalDeny}}
+			m.statusNote = "Operation rejected."
 			m.phase = "thinking"
 			m.approval = nil
 		}

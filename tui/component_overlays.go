@@ -51,39 +51,40 @@ func (m model) renderHelpModal() string {
 func (m model) renderApprovalBanner() string {
 	bannerWidth := max(24, m.chatPanelInnerWidth())
 	innerWidth := max(20, bannerWidth-approvalBannerStyle.GetHorizontalFrameSize())
+	toolName := strings.TrimSpace(m.approval.ToolName)
+	if toolName == "" {
+		toolName = "unknown"
+	}
 	command := strings.TrimSpace(m.approval.Command)
 	if command == "" {
 		command = "-"
 	}
 
 	title := "Approval required"
-	reasonBudget := max(0, innerWidth-lipgloss.Width(title)-2)
-	reason := trimPreview(m.approval.Reason, reasonBudget)
-	line1 := approvalTitleStyle.Render(title)
-	if reason != "" {
-		line1 += "  " + approvalReasonStyle.Render(reason)
+	lines := []string{
+		approvalTitleStyle.Render(title),
+		approvalReasonStyle.Render("Tool: " + trimPreview(toolName, innerWidth-6)),
+		approvalCommandStyle.Render("Command: " + trimPreview(command, innerWidth-9)),
 	}
-
-	toolPrefix := "Tool: "
-	hint := "Approve [Y/Enter]  Reject [N/Esc]"
-	minGap := 2
-	toolBudget := innerWidth - lipgloss.Width(toolPrefix) - lipgloss.Width(hint) - minGap
-	if toolBudget < 6 {
-		toolBudget = 6
+	if reason := strings.TrimSpace(m.approval.Reason); reason != "" {
+		lines = append(lines, approvalReasonStyle.Render(wrapPlainText(reason, innerWidth)))
 	}
-	tool := trimPreview(command, toolBudget)
-	leftPlain := toolPrefix + tool
-	gap := innerWidth - lipgloss.Width(leftPlain) - lipgloss.Width(hint)
-	if gap < 1 {
-		tool = trimPreview(command, max(1, innerWidth-lipgloss.Width(toolPrefix)-lipgloss.Width(hint)-1))
-		leftPlain = toolPrefix + tool
-		gap = max(1, innerWidth-lipgloss.Width(leftPlain)-lipgloss.Width(hint))
+	lines = append(lines, "")
+	for i, option := range m.approvalOptions() {
+		prefix := "  "
+		style := approvalOptionStyle
+		if i == clamp(m.approval.Cursor, 0, len(m.approvalOptions())-1) {
+			prefix = "> "
+			style = approvalOptionSelectedStyle
+		}
+		lines = append(lines, style.Render(prefix+option.Label))
+		lines = append(lines, approvalOptionDescriptionStyle.Render("  "+wrapPlainText(option.Description, max(8, innerWidth-2))))
 	}
-	line2 := approvalCommandStyle.Render(leftPlain) + strings.Repeat(" ", gap) + approvalHintStyle.Render(hint)
+	lines = append(lines, "", approvalHintStyle.Render("Up/Down or J/K to select  Enter confirm  Y approve once  N/Esc reject"))
 
 	body := lipgloss.NewStyle().
 		Width(innerWidth).
-		Render(strings.Join([]string{line1, line2}, "\n"))
+		Render(strings.Join(lines, "\n"))
 	return approvalBannerStyle.Render(body)
 }
 

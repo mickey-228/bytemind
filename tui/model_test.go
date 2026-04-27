@@ -116,14 +116,19 @@ func (a testRunnerAdapter) SetObserver(observer Observer) {
 }
 
 func (a testRunnerAdapter) SetApprovalHandler(handler ApprovalHandler) {
-	a.Runner.SetApprovalHandler(func(req tools.ApprovalRequest) (bool, error) {
+	a.Runner.SetApprovalHandler(func(req tools.ApprovalRequest) (tools.ApprovalDecision, error) {
 		if handler == nil {
-			return false, nil
+			return tools.ApprovalDecision{Disposition: tools.ApprovalDeny}, nil
 		}
-		return handler(ApprovalRequest{
-			Command: req.Command,
-			Reason:  req.Reason,
+		decision, err := handler(ApprovalRequest{
+			ToolName: req.ToolName,
+			Command:  req.Command,
+			Reason:   req.Reason,
 		})
+		if err != nil {
+			return tools.ApprovalDecision{}, err
+		}
+		return tools.ApprovalDecision{Disposition: tools.ApprovalDisposition(decision.Disposition)}, nil
 	})
 }
 
@@ -3158,7 +3163,7 @@ func TestLandingViewRendersCommandPaletteAboveInput(t *testing.T) {
 	}
 }
 
-func TestCommandPaletteUsesCompactThreeRowList(t *testing.T) {
+func TestCommandPaletteUsesCompactFiveRowList(t *testing.T) {
 	input := textarea.New()
 	input.SetValue("/")
 	m := model{
@@ -3171,8 +3176,8 @@ func TestCommandPaletteUsesCompactThreeRowList(t *testing.T) {
 
 	m.syncCommandPalette()
 
-	if len(m.visibleCommandItemsPage()) != 3 {
-		t.Fatalf("expected command palette list height 3, got %d", len(m.visibleCommandItemsPage()))
+	if len(m.visibleCommandItemsPage()) != 5 {
+		t.Fatalf("expected command palette list height 5, got %d", len(m.visibleCommandItemsPage()))
 	}
 }
 
@@ -3184,6 +3189,7 @@ func TestCommandPaletteSupportsPageNavigation(t *testing.T) {
 		{Name: "/c", Usage: "/c", Description: "c"},
 		{Name: "/d", Usage: "/d", Description: "d"},
 		{Name: "/e", Usage: "/e", Description: "e"},
+		{Name: "/f", Usage: "/f", Description: "f"},
 	}
 	defer func() { commandItems = original }()
 
@@ -3199,12 +3205,12 @@ func TestCommandPaletteSupportsPageNavigation(t *testing.T) {
 
 	afterDown, _ := m.handleCommandPaletteKey(tea.KeyMsg{Type: tea.KeyPgDown})
 	downModel := afterDown.(model)
-	if downModel.commandCursor != 3 {
+	if downModel.commandCursor != 5 {
 		t.Fatalf("expected pgdown to move to next command page, got cursor %d", downModel.commandCursor)
 	}
 	page := downModel.visibleCommandItemsPage()
-	if len(page) == 0 || page[0].Name != "/d" {
-		t.Fatalf("expected second page to start with /d, got %+v", page)
+	if len(page) == 0 || page[0].Name != "/f" {
+		t.Fatalf("expected second page to start with /f, got %+v", page)
 	}
 
 	afterUp, _ := downModel.handleCommandPaletteKey(tea.KeyMsg{Type: tea.KeyPgUp})
@@ -3995,8 +4001,8 @@ func TestApprovalBannerRendersAboveInput(t *testing.T) {
 		"Approval required",
 		"go test ./tui",
 		"run tests",
-		"Approve [Y/Enter]",
-		"Reject [N/Esc]",
+		"Approve this operation only",
+		"Disable approvals for this TUI session",
 	} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("expected approval banner to contain %q", want)
@@ -4013,8 +4019,9 @@ func TestApprovalBannerUsesCompactSingleNormalBorder(t *testing.T) {
 		width: 64,
 		input: input,
 		approval: &approvalPrompt{
-			Command: "write_file_with_a_very_long_tool_name_to_force_truncation",
-			Reason:  "destructive tool may modify workspace files: write_file_with_a_very_long_tool_name_to_force_truncation",
+			ToolName: "write_file",
+			Command:  "write_file_with_a_very_long_tool_name_to_force_truncation",
+			Reason:   "destructive tool may modify workspace files: write_file_with_a_very_long_tool_name_to_force_truncation",
 		},
 	}
 
@@ -4023,8 +4030,8 @@ func TestApprovalBannerUsesCompactSingleNormalBorder(t *testing.T) {
 		t.Fatalf("expected normal single border without rounded corners, got %q", banner)
 	}
 	lines := strings.Split(banner, "\n")
-	if len(lines) != 6 {
-		t.Fatalf("expected medium-height boxed approval banner with top/bottom padding, got %d lines: %q", len(lines), banner)
+	if len(lines) < 10 {
+		t.Fatalf("expected taller boxed approval panel with selectable options, got %d lines: %q", len(lines), banner)
 	}
 	expectedWidth := max(24, m.chatPanelInnerWidth())
 	for i, line := range lines {
@@ -4032,7 +4039,7 @@ func TestApprovalBannerUsesCompactSingleNormalBorder(t *testing.T) {
 			t.Fatalf("expected banner line %d width %d, got %d (%q)", i, expectedWidth, got, line)
 		}
 	}
-	for _, want := range []string{"Tool:", "Approve [Y/Enter]", "Reject [N/Esc]"} {
+	for _, want := range []string{"Tool: write_file", "Approve later requests from this tool", "Disable approvals for this TUI session"} {
 		if !strings.Contains(banner, want) {
 			t.Fatalf("expected compact approval banner to contain %q", want)
 		}
@@ -4054,10 +4061,10 @@ func TestApprovalBannerDefaultsWhenCommandAndReasonEmpty(t *testing.T) {
 	if !strings.Contains(banner, "Approval required") {
 		t.Fatalf("expected approval title in banner, got %q", banner)
 	}
-	if !strings.Contains(banner, "Tool: -") {
-		t.Fatalf("expected empty command to fallback to '-', got %q", banner)
+	if !strings.Contains(banner, "Tool: unknown") {
+		t.Fatalf("expected empty tool name to fallback to 'unknown', got %q", banner)
 	}
-	if !strings.Contains(banner, "Approve [Y/Enter]") || !strings.Contains(banner, "Reject [N/Esc]") {
+	if !strings.Contains(banner, "Command: -") || !strings.Contains(banner, "Enter confirm") {
 		t.Fatalf("expected approval actions to render, got %q", banner)
 	}
 }
@@ -4081,7 +4088,7 @@ func TestApprovalBannerNarrowWidthFallbackKeepsAlignedHint(t *testing.T) {
 			t.Fatalf("expected banner line %d width %d under narrow layout, got %d (%q)", i, expectedWidth, got, line)
 		}
 	}
-	for _, want := range []string{"Approve", "[Y/Enter]", "Reject", "[N/Esc]"} {
+	for _, want := range []string{"Up/Down", "Enter confirm", "Y approve once", "N/Esc", "reject"} {
 		if !strings.Contains(banner, want) {
 			t.Fatalf("expected narrow-layout fallback to keep action hint token %q, got %q", want, banner)
 		}
@@ -4116,8 +4123,9 @@ func TestUpdateApprovalRequestMsgSetsApprovalPhase(t *testing.T) {
 
 	got, cmd := m.Update(approvalRequestMsg{
 		Request: ApprovalRequest{
-			Command: "go test ./tui",
-			Reason:  "run focused tests",
+			ToolName: "run_shell",
+			Command:  "go test ./tui",
+			Reason:   "run focused tests",
 		},
 		Reply: reply,
 	})
@@ -4131,6 +4139,9 @@ func TestUpdateApprovalRequestMsgSetsApprovalPhase(t *testing.T) {
 	}
 	if updated.approval.Command != "go test ./tui" || updated.approval.Reason != "run focused tests" {
 		t.Fatalf("expected approval prompt contents to be preserved, got %+v", updated.approval)
+	}
+	if updated.approval.ToolName != "run_shell" || updated.approval.Cursor != 0 {
+		t.Fatalf("expected approval prompt metadata to be initialized, got %+v", updated.approval)
 	}
 	if updated.phase != "approval" || updated.statusNote != "Approval required." {
 		t.Fatalf("expected approval request to switch UI into approval state, got phase=%q note=%q", updated.phase, updated.statusNote)
@@ -4155,14 +4166,14 @@ func TestApprovalKeysTransitionStateAndSendDecision(t *testing.T) {
 		if updated.approval != nil {
 			t.Fatalf("expected approval prompt to clear after approval")
 		}
-		if updated.phase != "tool" || updated.statusNote != "Shell command approved." {
+		if updated.phase != "tool" || updated.statusNote != "Approved current operation." {
 			t.Fatalf("expected approval to move UI into tool phase, got phase=%q note=%q", updated.phase, updated.statusNote)
 		}
 
 		select {
 		case decision := <-reply:
-			if !decision.Approved {
-				t.Fatalf("expected approval decision to be true")
+			if !decision.Decision.Approved() || decision.Decision.Disposition != ApprovalApproveOnce {
+				t.Fatalf("expected approve-once decision, got %+v", decision)
 			}
 		default:
 			t.Fatalf("expected approval decision to be sent")
@@ -4186,17 +4197,68 @@ func TestApprovalKeysTransitionStateAndSendDecision(t *testing.T) {
 		if updated.approval != nil {
 			t.Fatalf("expected approval prompt to clear after rejection")
 		}
-		if updated.phase != "thinking" || updated.statusNote != "Shell command rejected." {
+		if updated.phase != "thinking" || updated.statusNote != "Operation rejected." {
 			t.Fatalf("expected rejection to return UI to thinking phase, got phase=%q note=%q", updated.phase, updated.statusNote)
 		}
 
 		select {
 		case decision := <-reply:
-			if decision.Approved {
-				t.Fatalf("expected rejection decision to be false")
+			if decision.Decision.Approved() || decision.Decision.Disposition != ApprovalDeny {
+				t.Fatalf("expected rejection decision, got %+v", decision)
 			}
 		default:
 			t.Fatalf("expected rejection decision to be sent")
+		}
+	})
+
+	t.Run("approve same tool session caches future requests", func(t *testing.T) {
+		reply := make(chan approvalDecision, 1)
+		m := model{
+			approval: &approvalPrompt{
+				ToolName: "run_shell",
+				Command:  "go test ./tui",
+				Reason:   "run focused tests",
+				Cursor:   1,
+				Reply:    reply,
+			},
+			sessionApprovedTools: make(map[string]struct{}),
+			phase:                "approval",
+			async:                make(chan tea.Msg, 1),
+		}
+
+		got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+		updated := got.(model)
+		if _, ok := updated.sessionApprovedTools["run_shell"]; !ok {
+			t.Fatalf("expected same-tool approval to be cached, got %#v", updated.sessionApprovedTools)
+		}
+		select {
+		case decision := <-reply:
+			if decision.Decision.Disposition != ApprovalApproveSameToolSession {
+				t.Fatalf("expected same-tool session decision, got %+v", decision)
+			}
+		default:
+			t.Fatal("expected approval decision to be sent")
+		}
+
+		reply2 := make(chan approvalDecision, 1)
+		got, cmd := updated.Update(approvalRequestMsg{
+			Request: ApprovalRequest{ToolName: "run_shell", Command: "go test ./...", Reason: "same tool"},
+			Reply:   reply2,
+		})
+		updated = got.(model)
+		if cmd == nil {
+			t.Fatal("expected async wait command after cached approval")
+		}
+		if updated.approval != nil {
+			t.Fatalf("expected cached same-tool request to skip prompt, got %+v", updated.approval)
+		}
+		select {
+		case decision := <-reply2:
+			if decision.Decision.Disposition != ApprovalApproveSameToolSession {
+				t.Fatalf("expected cached same-tool decision, got %+v", decision)
+			}
+		default:
+			t.Fatal("expected cached approval reply")
 		}
 	})
 }

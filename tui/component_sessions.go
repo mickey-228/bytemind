@@ -123,6 +123,7 @@ func (m *model) newSession() error {
 		return err
 	}
 	m.sess = next
+	m.resetSessionApprovalState()
 	m.screen = screenLanding
 	m.plan = planpkg.State{}
 	m.mode = modeBuild
@@ -181,6 +182,7 @@ func (m *model) resumeSession(prefix string) error {
 		return fmt.Errorf("session %s belongs to workspace %s", next.ID, next.Workspace)
 	}
 	m.sess = next
+	m.resetSessionApprovalState()
 	m.screen = screenChat
 	m.plan = copyPlanState(next.Plan)
 	m.mode = toAgentMode(next.Mode)

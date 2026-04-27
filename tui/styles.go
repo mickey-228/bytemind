@@ -366,7 +366,7 @@ var (
 				Background(semanticColors.Surface).
 				BorderLeft(true).
 				BorderForeground(semanticColors.Border).
-				Padding(0, 1)
+				Padding(0, 0)
 
 	runToolSuccessSectionStyle = runToolSectionStyle.Copy().
 					BorderForeground(semanticColors.Success)
@@ -408,6 +408,16 @@ var (
 
 	approvalHintStyle = lipgloss.NewStyle().
 				Foreground(semanticColors.TextMuted)
+
+	approvalOptionStyle = lipgloss.NewStyle().
+				Foreground(semanticColors.TextBase)
+
+	approvalOptionSelectedStyle = lipgloss.NewStyle().
+					Foreground(semanticColors.Accent).
+					Bold(true)
+
+	approvalOptionDescriptionStyle = lipgloss.NewStyle().
+					Foreground(semanticColors.TextMuted)
 
 	activeSkillBannerStyle = lipgloss.NewStyle().
 				BorderStyle(lipgloss.NormalBorder()).

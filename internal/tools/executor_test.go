@@ -326,14 +326,14 @@ func TestExecutorAllowsDestructiveToolWhenApprovalGranted(t *testing.T) {
 
 	got, err := executor.Execute(context.Background(), "write_file", `{"path":"a.txt"}`, &ExecutionContext{
 		ApprovalPolicy: "on-request",
-		Approval: func(req ApprovalRequest) (bool, error) {
+		Approval: func(req ApprovalRequest) (ApprovalDecision, error) {
 			if req.Command != "write_file" {
 				t.Fatalf("unexpected approval command: %q", req.Command)
 			}
 			if !strings.Contains(req.Reason, "destructive tool") {
 				t.Fatalf("unexpected approval reason: %q", req.Reason)
 			}
-			return true, nil
+			return ApprovalDecision{Disposition: ApprovalApproveOnce}, nil
 		},
 	})
 	if err != nil {
@@ -370,9 +370,9 @@ func TestExecutorAwayModeAutoDenySkipsDestructiveApprovalPrompt(t *testing.T) {
 		ApprovalPolicy: "on-request",
 		ApprovalMode:   "away",
 		AwayPolicy:     "auto_deny_continue",
-		Approval: func(req ApprovalRequest) (bool, error) {
+		Approval: func(req ApprovalRequest) (ApprovalDecision, error) {
 			asked = true
-			return true, nil
+			return ApprovalDecision{Disposition: ApprovalApproveOnce}, nil
 		},
 	})
 	if err == nil {

@@ -11,6 +11,71 @@ import (
 
 var clarifyChoiceShortcutPattern = regexp.MustCompile(`(?i)(^|[\s/|,，;；:：\-])([a-d]|1|2|3|4)([.)：:\s]|$)`)
 
+// These repair heuristics intentionally mirror the small set of execution-choice
+// labels exposed by the plan prompt/runtime once a plan is converged.
+var (
+	planAdjustmentOnlyInputs = []string{
+		"adjust",
+		"adjust plan",
+		"continue adjusting plan",
+		"continue plan",
+		"option 2",
+		"option b",
+		"2",
+		"2.",
+		"b",
+		"b.",
+		"继续微调计划",
+		"微调计划",
+		"继续调整计划",
+		"调整计划",
+	}
+	executionActionChoicePromptTokens = []string{
+		"choose next step",
+		"choose next action",
+		"next step",
+		"next action",
+		"start execution",
+		"continue execution",
+		"switch to build",
+		"build mode",
+		"adjust plan",
+		"reply with 1",
+		"reply with 2",
+		"下一步",
+		"可选下一步",
+		"开始执行",
+		"继续执行",
+		"切到 build",
+		"切换到 build",
+		"调整计划",
+		"继续微调计划",
+	}
+	planDecisionAcknowledgementTokens = []string{
+		"adopt",
+		"adopted",
+		"go with",
+		"going with",
+		"chosen",
+		"choose ",
+		"recorded",
+		"using option",
+		"start execution",
+		"adjust plan",
+		"switch to build",
+		"采用",
+		"已收到",
+		"已记录",
+		"记录为",
+		"选用",
+		"选择",
+		"开始执行",
+		"调整计划",
+		"切到 build",
+		"切换到 build",
+	}
+)
+
 func shouldRepairPlanRevisionTurn(runMode planpkg.AgentMode, state planpkg.State, latestUser string, reply llm.Message) bool {
 	if runMode != planpkg.ModePlan || len(reply.ToolCalls) > 0 {
 		return false
@@ -270,25 +335,7 @@ func looksLikePlanRevisionInput(text string) bool {
 }
 
 func looksLikePlanAdjustmentOnlyInput(text string) bool {
-	switch strings.ToLower(strings.TrimSpace(text)) {
-	case "adjust",
-		"adjust plan",
-		"continue adjusting plan",
-		"continue plan",
-		"option 2",
-		"option b",
-		"2",
-		"2.",
-		"b",
-		"b.",
-		"继续微调计划",
-		"微调计划",
-		"继续调整计划",
-		"调整计划":
-		return true
-	default:
-		return false
-	}
+	return matchesNormalizedExactText(text, planAdjustmentOnlyInputs...)
 }
 
 func looksLikeExecutionActionChoicePrompt(text string) bool {
@@ -296,24 +343,7 @@ func looksLikeExecutionActionChoicePrompt(text string) bool {
 	if normalized == "" || countChoiceShortcuts(normalized) < 2 {
 		return false
 	}
-	if containsAnyToken(normalized,
-		"choose next step",
-		"choose next action",
-		"start execution",
-		"continue execution",
-		"switch to build",
-		"build mode",
-		"adjust plan",
-		"reply with 1",
-		"reply with 2",
-		"涓嬩竴姝?",
-		"寮€濮嬫墽琛?",
-		"缁х画鎵ц",
-		"鍒囧埌 build",
-		"鍒囨崲鍒?build",
-		"璋冩暣璁″垝",
-		"缁х画寰皟璁″垝",
-	) {
+	if containsAnyToken(normalized, executionActionChoicePromptTokens...) {
 		return true
 	}
 	return strings.Contains(normalized, "start execution") && strings.Contains(normalized, "adjust plan")
@@ -344,27 +374,15 @@ func countChoiceShortcuts(text string) int {
 
 func looksLikePlanDecisionAcknowledgement(text string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(text))
-	return containsAnyToken(normalized,
-		"adopt",
-		"adopted",
-		"go with",
-		"going with",
-		"chosen",
-		"choose ",
-		"recorded",
-		"using option",
-		"start execution",
-		"adjust plan",
-		"switch to build",
-		"采用",
-		"已收到",
-		"已记录",
-		"记录为",
-		"选用",
-		"选择",
-		"开始执行",
-		"调整计划",
-		"切到 build",
-		"切换到 build",
-	)
+	return containsAnyToken(normalized, planDecisionAcknowledgementTokens...)
+}
+
+func matchesNormalizedExactText(text string, options ...string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	for _, option := range options {
+		if normalized == option {
+			return true
+		}
+	}
+	return false
 }

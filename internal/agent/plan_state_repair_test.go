@@ -38,6 +38,20 @@ func TestShouldRepairPlanClarifyTurnIgnoresExecutionActionChoices(t *testing.T) 
 	}
 }
 
+func TestLooksLikeExecutionActionChoicePromptMatchesChineseConvergedActions(t *testing.T) {
+	text := "可选下一步：\nA. 切到 Build 模式，开始执行\nB. 继续微调计划"
+	if !looksLikeExecutionActionChoicePrompt(text) {
+		t.Fatalf("expected converged Chinese action choices to be detected, got %q", text)
+	}
+}
+
+func TestLooksLikePlanDecisionAcknowledgementMatchesChineseChoiceAcknowledgement(t *testing.T) {
+	text := "已记录，采用 B：Streamlit。接下来切到 build。"
+	if !looksLikePlanDecisionAcknowledgement(text) {
+		t.Fatalf("expected Chinese decision acknowledgement to be detected, got %q", text)
+	}
+}
+
 func TestShouldRepairPlanClarifyTurnRepairsInlineChoicesEvenWhenStateLooksConverged(t *testing.T) {
 	state := planpkg.State{
 		Goal:                "Ship the feature",

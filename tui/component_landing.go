@@ -52,53 +52,68 @@ func buildLandingLogoGlyphLines(text string) []string {
 }
 
 func (m model) renderLandingHero() string {
-	logoRows := len(landingLogoGlyphLines)
-	logoCols := 0
-	if logoRows > 0 {
-		logoCols = len(landingLogoGlyphLines[0])
-	}
-	anim := m.landingAnimationState(logoCols, logoRows)
+	innerWidth := m.landingPromptHeroWidth()
+	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#1E2E3A"))
+	headerHostStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#64DF69"))
+	promptSigilStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#64DF69")).Bold(true)
+	brandStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#E2F1FF")).Bold(true)
+	cursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#5B7288"))
+	dotMutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#4A5F72"))
+	dotActiveStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#64DF69"))
 
-	pixelRows := make([]string, 0, len(landingLogoGlyphLines))
-	for rowIndex, row := range landingLogoGlyphLines {
-		pixelRows = append(pixelRows, m.renderLandingPixelRow(row, rowIndex, anim.logoBeam10, anim.logoActive))
-	}
-	innerWidth := maxLineWidth(pixelRows)
-	frameGlow := landingFrameGlowPosition(anim.frameStep, innerWidth, len(pixelRows), anim.frameActive)
-	topFrame := renderLandingFrameLine("+"+dashedPattern(innerWidth+2)+"+", frameGlow.topCol)
+	headerHost := headerHostStyle.Render("bytemind@localhost:~")
+	dots := strings.Join([]string{
+		dotMutedStyle.Render("●"),
+		dotMutedStyle.Render("●"),
+		dotActiveStyle.Render("●"),
+	}, " ")
+	headerGap := max(1, innerWidth-lipgloss.Width(headerHost)-lipgloss.Width(dots))
+	headerRow := padLandingANSI(headerHost+strings.Repeat(" ", headerGap)+dots, innerWidth)
 
-	lines := make([]string, 0, len(pixelRows)+1)
-	lines = append(lines, topFrame)
-	for rowIndex, line := range pixelRows {
-		pad := max(0, innerWidth-lipgloss.Width(line))
-		padded := line + strings.Repeat(" ", pad)
-		leftStyle := landingLogoFrameStyle
-		if frameGlow.leftRow >= 0 {
-			switch absInt(rowIndex - frameGlow.leftRow) {
-			case 0:
-				leftStyle = landingLogoFrameGlowStyle
-			case 1:
-				leftStyle = landingLogoFrameSoftStyle
-			}
-		}
-		rightStyle := landingLogoFrameStyle
-		if frameGlow.rightRow >= 0 {
-			switch absInt(rowIndex - frameGlow.rightRow) {
-			case 0:
-				rightStyle = landingLogoFrameGlowStyle
-			case 1:
-				rightStyle = landingLogoFrameSoftStyle
-			}
-		}
-		framed := leftStyle.Render("| ") +
-			padded +
-			rightStyle.Render(" |")
-		lines = append(lines, framed)
+	promptRow := padLandingANSI("  "+promptSigilStyle.Render(">_ ")+brandStyle.Render("Bytemind"), innerWidth)
+	blankRow := strings.Repeat(" ", innerWidth)
+	cursorGlyph := " "
+	if m.landingPromptCursorVisible() {
+		cursorGlyph = "█"
 	}
+	cursorRow := padLandingANSI("  "+cursorStyle.Render(cursorGlyph), innerWidth)
 
-	frame := strings.Join(lines, "\n")
+	frame := strings.Join([]string{
+		borderStyle.Render("┌" + strings.Repeat("─", innerWidth) + "┐"),
+		borderStyle.Render("│") + headerRow + borderStyle.Render("│"),
+		borderStyle.Render("├" + strings.Repeat("─", innerWidth) + "┤"),
+		borderStyle.Render("│") + promptRow + borderStyle.Render("│"),
+		borderStyle.Render("│") + blankRow + borderStyle.Render("│"),
+		borderStyle.Render("│") + cursorRow + borderStyle.Render("│"),
+		borderStyle.Render("└" + strings.Repeat("─", innerWidth) + "┘"),
+	}, "\n")
+
 	subtitle := landingSubtitleStyle.Render("Your AI assistant")
 	return frame + "\n\n" + subtitle
+}
+
+func (m model) landingPromptHeroWidth() int {
+	if m.width <= 0 {
+		return 72
+	}
+	maxFit := max(24, m.width-14)
+	preferred := min(90, max(60, (m.width*3)/4))
+	return clamp(preferred, 48, maxFit)
+}
+
+func (m model) landingPromptCursorVisible() bool {
+	const blinkHalfCycle = 8
+	return (m.landingGlowStep/blinkHalfCycle)%2 == 0
+}
+
+func padLandingANSI(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if w := lipgloss.Width(text); w < width {
+		return text + strings.Repeat(" ", width-w)
+	}
+	return xansi.Cut(text, 0, width)
 }
 
 func (m model) renderLandingOverlayPanel() string {
@@ -156,21 +171,15 @@ func (m model) renderLandingInputActions() string {
 func (m model) renderLandingModeTabs() string {
 	buildStyle := landingModeInactiveStyle
 	planStyle := landingModeInactiveStyle
-	awayStyle := landingModeInactiveStyle
 	if m.mode == modeBuild {
 		buildStyle = landingModeBuildActiveStyle
 	} else {
 		planStyle = landingModePlanActiveStyle
 	}
-	if m.awayEnabled() {
-		awayStyle = landingModeAwayActiveStyle
-	}
 	sep := landingModeInactiveStyle.Render("   ")
 	return buildStyle.Render("Build") +
 		sep +
-		planStyle.Render("Plan") +
-		sep +
-		awayStyle.Render(m.awayStatusLabel())
+		planStyle.Render("Plan")
 }
 
 func renderLandingShortcutHints() string {
@@ -272,8 +281,8 @@ func (m model) landingAnimationState(logoCols, logoRows int) landingAnimationSta
 		logoStartCol = -10
 		logoAdvance  = 3 // 0.3 col per tick for smoother motion.
 	)
-	topShift := max(0, (logoRows-1)*2)
-	logoEndCol := max(logoStartCol, logoCols-1-topShift)
+	// Keep the logo beam moving strictly left -> right.
+	logoEndCol := max(logoStartCol, logoCols-1)
 	logoDistance10 := max(0, (logoEndCol-logoStartCol)*10)
 	logoFrames := 1 + ((logoDistance10 + logoAdvance - 1) / logoAdvance)
 
@@ -371,29 +380,27 @@ func renderLandingFrameLine(line string, glowCol int) string {
 	return b.String()
 }
 
-func (m model) renderLandingPixelRow(pattern string, row int, beamRaw10 int, active bool) string {
-	topRow := len(landingLogoGlyphLines) - 1
-	beamCol10 := beamRaw10 + max(0, topRow-row)*20
+func (m model) renderLandingPixelRow(pattern string, _ int, beamRaw10 int, active bool) string {
+	beamCol10 := beamRaw10
+	const pixelCell = "  "
 
 	var b strings.Builder
 	for col, ch := range pattern {
 		if ch != '1' {
-			b.WriteString("  ")
+			b.WriteString(pixelCell)
 			continue
 		}
-		if !active {
-			b.WriteString(landingLogoPixelStyle.Render("  "))
-			continue
+
+		pixelStyle := landingLogoPixelStyle
+		if active {
+			d10 := absInt(col*10 - beamCol10)
+			// Use a single highlight color for the flowing beam.
+			if d10 <= 7 {
+				pixelStyle = landingLogoPixelGlowStyle
+			}
 		}
-		d10 := absInt(col*10 - beamCol10)
-		switch {
-		case d10 <= 2:
-			b.WriteString(landingLogoPixelGlowStyle.Render("  "))
-		case d10 <= 11:
-			b.WriteString(landingLogoPixelSoftStyle.Render("  "))
-		default:
-			b.WriteString(landingLogoPixelStyle.Render("  "))
-		}
+
+		b.WriteString(pixelStyle.Render(pixelCell))
 	}
 	return b.String()
 }

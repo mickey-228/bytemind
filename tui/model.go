@@ -47,7 +47,7 @@ const (
 	thinkingLabel              = "thinking"
 	chatTitleLabel             = "Bytemind Chat"
 	tuiTitleLabel              = "Bytemind TUI"
-	footerHintText             = "tab agents | / commands | drag select | Ctrl+C copy/quit | Ctrl+F history | Ctrl+L sessions"
+	footerHintText             = "tab agents | / commands | drag select | Ctrl+A full-access | Ctrl+C copy/quit | Ctrl+L sessions"
 	conversationViewportZoneID = "bytemind:conversation:viewport"
 	inputEditorZoneID          = "bytemind:input:editor"
 	thinkingSpinnerFPS         = 80 * time.Millisecond
@@ -64,9 +64,9 @@ type footerShortcutHint struct {
 var footerShortcutHints = []footerShortcutHint{
 	{Key: "tab", Label: "agents"},
 	{Key: "/", Label: "commands"},
-	{Key: "Ctrl+F", Label: "history"},
-	{Key: "Ctrl+L", Label: "sessions"},
 	{Key: "Ctrl+C", Label: "copy/quit"},
+	{Key: "Ctrl+L", Label: "sessions"},
+	{Key: "Ctrl+A", Label: "full-access"},
 }
 
 var promptSearchFilterHints = []footerShortcutHint{
@@ -76,8 +76,8 @@ var promptSearchFilterHints = []footerShortcutHint{
 
 var promptSearchActionHints = []footerShortcutHint{
 	{Key: "PgUp/PgDn", Label: "page"},
-	{Key: "Ctrl+F", Label: "next"},
-	{Key: "Ctrl+S", Label: "prev"},
+	{Key: "Down", Label: "next"},
+	{Key: "Up", Label: "prev"},
 	{Key: "Enter", Label: "apply"},
 	{Key: "Esc", Label: "close"},
 }
@@ -166,12 +166,21 @@ type approvalPrompt struct {
 	Command string
 	Reason  string
 	Reply   chan approvalDecision
+	Kind    string
+	Choice  int
 }
 
 type approvalDecision struct {
 	Approved bool
 	Err      error
 }
+
+const (
+	approvalPromptKindTool             = "tool"
+	approvalPromptKindEnableFullAccess = "enable_full_access"
+	approvalChoiceApprove              = 0
+	approvalChoiceReject               = 1
+)
 
 type approvalModeUpdater interface {
 	UpdateApprovalMode(mode string)
@@ -720,6 +729,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Command: msg.Request.Command,
 			Reason:  msg.Request.Reason,
 			Reply:   msg.Reply,
+			Kind:    approvalPromptKindTool,
+			Choice:  approvalChoiceApprove,
 		}
 		m.statusNote = "Approval required."
 		m.phase = "approval"
@@ -1112,7 +1123,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.copyCurrentSelection()
 		}
 		if m.approval != nil {
-			m.approval.Reply <- approvalDecision{Approved: false}
+			m.resolveApprovalDecision(false)
 		}
 		if m.runCancel != nil {
 			m.runCancel()
@@ -1158,11 +1169,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.helpOpen = !m.helpOpen
 		}
 		return m, nil
-	case "ctrl+f":
-		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.skillsOpen || m.commandOpen || m.mentionOpen || m.planActionOpen {
-			return m, nil
-		}
-		return m, m.openPromptSearch(promptSearchModeQuick)
 	case "ctrl+k":
 		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.commandOpen || m.mentionOpen || m.planActionOpen || m.busy {
 			return m, nil
@@ -1171,20 +1177,29 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusNote = err.Error()
 		}
 		return m, nil
+	case "ctrl+a":
+		if m.screen == screenLanding {
+			return m, nil
+		}
+		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.skillsOpen || m.commandOpen || m.mentionOpen || m.planActionOpen {
+			return m, nil
+		}
+		m.toggleApprovalMode()
+		return m, nil
 	}
 
 	if m.approval != nil {
 		switch msg.String() {
-		case "y", "Y", "enter":
-			m.approval.Reply <- approvalDecision{Approved: true}
-			m.statusNote = "Shell command approved."
-			m.phase = "tool"
-			m.approval = nil
+		case "left", "h", "up", "k", "shift+tab", "backtab":
+			m.setApprovalChoice(approvalChoiceApprove)
+		case "right", "l", "down", "j", "tab":
+			m.setApprovalChoice(approvalChoiceReject)
+		case "enter":
+			m.resolveApprovalDecision(m.currentApprovalChoice() == approvalChoiceApprove)
+		case "y", "Y":
+			m.resolveApprovalDecision(true)
 		case "n", "N", "esc":
-			m.approval.Reply <- approvalDecision{Approved: false}
-			m.statusNote = "Shell command rejected."
-			m.phase = "thinking"
-			m.approval = nil
+			m.resolveApprovalDecision(false)
 		}
 		return m, nil
 	}
@@ -2491,34 +2506,105 @@ func (m model) currentSkillLabel() string {
 	return name
 }
 
-func (m model) awayEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(m.cfg.ApprovalMode), "away")
+func (m model) fullAccessEnabled() bool {
+	mode := strings.TrimSpace(m.cfg.ApprovalMode)
+	return strings.EqualFold(mode, "full_access") || strings.EqualFold(mode, "away")
 }
 
-func (m model) awayStatusLabel() string {
-	if m.awayEnabled() {
-		return "Away:ON"
+func (m model) approvalModeStatusLabel() string {
+	if m.fullAccessEnabled() {
+		return "! Full Access"
 	}
-	return "Away:OFF"
+	return "Access:Default"
 }
 
-func (m *model) toggleAwayMode() {
+func defaultApprovalChoice(kind string) int {
+	return approvalChoiceApprove
+}
+
+func normalizeApprovalChoice(choice int, kind string) int {
+	if choice == approvalChoiceApprove || choice == approvalChoiceReject {
+		return choice
+	}
+	return defaultApprovalChoice(kind)
+}
+
+func (m model) currentApprovalChoice() int {
+	if m.approval == nil {
+		return approvalChoiceApprove
+	}
+	return normalizeApprovalChoice(m.approval.Choice, m.approval.Kind)
+}
+
+func (m *model) setApprovalChoice(choice int) {
+	if m == nil || m.approval == nil {
+		return
+	}
+	m.approval.Choice = normalizeApprovalChoice(choice, m.approval.Kind)
+}
+
+func (m *model) resolveApprovalDecision(approved bool) {
+	if m == nil || m.approval == nil {
+		return
+	}
+	current := m.approval
+	if current.Reply != nil {
+		current.Reply <- approvalDecision{Approved: approved}
+	}
+	switch current.Kind {
+	case approvalPromptKindEnableFullAccess:
+		if approved {
+			m.setApprovalMode("full_access")
+			m.statusNote = "Warning: Full access enabled. Approval prompts are auto-approved."
+		} else {
+			m.statusNote = "Full access request canceled."
+		}
+		m.phase = "idle"
+	case approvalPromptKindTool, "":
+		if approved {
+			m.statusNote = "Shell command approved."
+			m.phase = "tool"
+		} else {
+			m.statusNote = "Shell command rejected."
+			m.phase = "thinking"
+		}
+	default:
+		if approved {
+			m.statusNote = "Approved."
+		} else {
+			m.statusNote = "Rejected."
+		}
+	}
+	m.approval = nil
+}
+
+func (m *model) setApprovalMode(mode string) {
 	if m == nil {
 		return
 	}
-	nextMode := "away"
-	if m.awayEnabled() {
-		nextMode = "interactive"
-	}
-	m.cfg.ApprovalMode = nextMode
+	m.cfg.ApprovalMode = mode
 	if updater, ok := m.runner.(approvalModeUpdater); ok && updater != nil {
-		updater.UpdateApprovalMode(nextMode)
+		updater.UpdateApprovalMode(mode)
 	}
-	if nextMode == "away" {
-		m.statusNote = "Away mode enabled."
+}
+
+func (m *model) toggleApprovalMode() {
+	if m == nil {
 		return
 	}
-	m.statusNote = "Away mode disabled."
+	if m.fullAccessEnabled() {
+		m.setApprovalMode("interactive")
+		m.statusNote = "Default approval mode enabled."
+		return
+	}
+	m.approval = &approvalPrompt{
+		Command: "approval_mode=full_access",
+		Reason:  "Enable full access? Approval prompts will be auto-approved and no longer interrupt tasks.",
+		Kind:    approvalPromptKindEnableFullAccess,
+		Choice:  approvalChoiceApprove,
+	}
+	m.statusNote = "Approval required."
+	m.phase = "approval"
 }
 
 func preparePlanForContinuation(state planpkg.State) (planpkg.State, error) {

@@ -22,6 +22,12 @@ func (m model) landingInputShellWidth() int {
 }
 
 func (m model) modeAccentColor() lipgloss.Color {
+	if m.screen == screenLanding {
+		if m.mode == modePlan {
+			return lipgloss.Color("#A9C6E8")
+		}
+		return lipgloss.Color("#4CB7FF")
+	}
 	if m.mode == modePlan {
 		return colorThinking
 	}
@@ -81,13 +87,13 @@ func (m *model) applyLandingInputTheme() {
 	if m == nil {
 		return
 	}
-	bg := lipgloss.Color("#000000")
-	text := lipgloss.Color("#E9F2FF")
-	placeholder := lipgloss.Color("#7D91BA")
+	bg := lipgloss.Color("#020A14")
+	text := lipgloss.Color("#E2F1FF")
+	placeholder := lipgloss.Color("#6C8FB7")
 	cursorLine := bg
 	cursorBg := lipgloss.Color("#FFFFFF")
 	cursorFg := lipgloss.Color("#000000")
-	prompt := lipgloss.Color("#8CCEFF")
+	prompt := lipgloss.Color("#4CB7FF")
 
 	focused, blurred := textarea.DefaultStyles()
 	for _, style := range []*textarea.Style{&focused, &blurred} {

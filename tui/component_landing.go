@@ -24,7 +24,6 @@ func (m model) renderLandingHero() string {
 	promptLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#7FA4CC"))
 	brandStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#E6F2FF")).Bold(true)
 	pixelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#2BE8FF"))
-	cursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#718CA5"))
 	dotMutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#455C71"))
 	dotActiveStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#64DF69"))
 
@@ -47,12 +46,6 @@ func (m model) renderLandingHero() string {
 	if len(logoRows) == 0 || lipgloss.Width(pixelRows[0])+2 > innerWidth {
 		logoRows = []string{padLandingANSI("  "+brandStyle.Render("Bytemind"), innerWidth)}
 	}
-	cursorGlyph := " "
-	if m.landingPromptCursorVisible() {
-		cursorGlyph = "▌"
-	}
-	cursorRow := padLandingANSI("  "+cursorStyle.Render("_ "+cursorGlyph), innerWidth)
-
 	frameRows := []string{
 		borderStyle.Render("┌" + strings.Repeat("─", innerWidth) + "┐"),
 		borderStyle.Render("│") + headerRow + borderStyle.Render("│"),
@@ -64,7 +57,6 @@ func (m model) renderLandingHero() string {
 	}
 	frameRows = append(
 		frameRows,
-		borderStyle.Render("│")+cursorRow+borderStyle.Render("│"),
 		borderStyle.Render("└"+strings.Repeat("─", innerWidth)+"┘"),
 	)
 	frame := strings.Join(frameRows, "\n")
@@ -82,11 +74,6 @@ func (m model) landingPromptHeroWidth() int {
 	return clamp(preferred, 54, maxFit)
 }
 
-func (m model) landingPromptCursorVisible() bool {
-	const blinkHalfCycle = 8
-	return (m.landingGlowStep/blinkHalfCycle)%2 == 0
-}
-
 func padLandingANSI(text string, width int) string {
 	if width <= 0 {
 		return ""
@@ -99,90 +86,83 @@ func padLandingANSI(text string, width int) string {
 
 var landingPixelGlyphs = map[rune][]string{
 	'B': {
-		"11110",
-		"10001",
-		"11110",
-		"10001",
-		"10001",
-		"10001",
-		"11110",
+		"1110",
+		"1001",
+		"1110",
+		"1001",
+		"1001",
+		"1110",
 	},
 	'Y': {
-		"10001",
-		"01010",
-		"00100",
-		"00100",
-		"00100",
-		"00100",
-		"00100",
+		"1001",
+		"1001",
+		"0110",
+		"0010",
+		"0010",
+		"0010",
 	},
 	'T': {
-		"11111",
-		"00100",
-		"00100",
-		"00100",
-		"00100",
-		"00100",
-		"00100",
+		"1111",
+		"0010",
+		"0010",
+		"0010",
+		"0010",
+		"0010",
 	},
 	'E': {
-		"11111",
-		"10000",
-		"11110",
-		"10000",
-		"10000",
-		"10000",
-		"11111",
+		"1111",
+		"1000",
+		"1110",
+		"1000",
+		"1000",
+		"1111",
 	},
 	'M': {
-		"10001",
-		"11011",
-		"10101",
-		"10001",
-		"10001",
-		"10001",
-		"10001",
+		"1001",
+		"1111",
+		"1001",
+		"1001",
+		"1001",
+		"1001",
 	},
 	'I': {
-		"11111",
-		"00100",
-		"00100",
-		"00100",
-		"00100",
-		"00100",
-		"11111",
+		"1111",
+		"0010",
+		"0010",
+		"0010",
+		"0010",
+		"1111",
 	},
 	'N': {
-		"10001",
-		"11001",
-		"10101",
-		"10011",
-		"10001",
-		"10001",
-		"10001",
+		"1001",
+		"1101",
+		"1011",
+		"1001",
+		"1001",
+		"1001",
 	},
 	'D': {
-		"11110",
-		"10001",
-		"10001",
-		"10001",
-		"10001",
-		"10001",
-		"11110",
+		"1110",
+		"1001",
+		"1001",
+		"1001",
+		"1001",
+		"1110",
 	},
 	' ': {
-		"00000",
-		"00000",
-		"00000",
-		"00000",
-		"00000",
-		"00000",
-		"00000",
+		"0000",
+		"0000",
+		"0000",
+		"0000",
+		"0000",
+		"0000",
 	},
 }
 
 func landingPixelLogoRows(text string, onStyle lipgloss.Style) []string {
-	const glyphHeight = 7
+	const glyphHeight = 6
+	onCell := onStyle.Render("██")
+	offCell := "  "
 	runes := []rune(text)
 	if len(runes) == 0 {
 		return nil
@@ -197,9 +177,9 @@ func landingPixelLogoRows(text string, onStyle lipgloss.Style) []string {
 			rowPattern := glyph[rowIdx]
 			for _, cell := range rowPattern {
 				if cell == '1' {
-					rowBuilders[rowIdx].WriteString(onStyle.Render("█"))
+					rowBuilders[rowIdx].WriteString(onCell)
 				} else {
-					rowBuilders[rowIdx].WriteByte(' ')
+					rowBuilders[rowIdx].WriteString(offCell)
 				}
 			}
 			if i < len(runes)-1 {

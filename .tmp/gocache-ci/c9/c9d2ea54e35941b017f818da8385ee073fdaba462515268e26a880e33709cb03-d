@@ -1,0 +1,8 @@
+./adapter.go
+./client.go
+./health.go
+./adapter_extra_test.go
+./adapter_test.go
+./client_extra_test.go
+./client_test.go
+./health_test.go

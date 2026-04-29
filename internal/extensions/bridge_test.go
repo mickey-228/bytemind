@@ -8,9 +8,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"bytemind/internal/llm"
-	skillspkg "bytemind/internal/skills"
-	toolspkg "bytemind/internal/tools"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	skillspkg "github.com/1024XEngineer/bytemind/internal/skills"
+	toolspkg "github.com/1024XEngineer/bytemind/internal/tools"
 )
 
 func TestStableToolKeyNormalizesSegments(t *testing.T) {
@@ -32,6 +32,16 @@ func TestStableToolKeyAppliesLengthLimit(t *testing.T) {
 	}
 	if len(key) > maxStableToolKeyLength {
 		t.Fatalf("stable key exceeded max length: %d", len(key))
+	}
+}
+
+func TestStableToolKeyForMCPStripsExtensionPrefix(t *testing.T) {
+	key, err := StableToolKey(ExtensionMCP, "mcp.docs", "open_doc")
+	if err != nil {
+		t.Fatalf("StableToolKey failed: %v", err)
+	}
+	if key != "mcp:docs:open_doc" {
+		t.Fatalf("unexpected mcp stable key: %q", key)
 	}
 }
 

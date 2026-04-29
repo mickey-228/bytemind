@@ -9,10 +9,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"bytemind/internal/history"
-	"bytemind/internal/llm"
-	"bytemind/internal/mention"
-	planpkg "bytemind/internal/plan"
+	"github.com/1024XEngineer/bytemind/internal/history"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	"github.com/1024XEngineer/bytemind/internal/mention"
+	planpkg "github.com/1024XEngineer/bytemind/internal/plan"
 )
 
 func (m model) handleCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -69,8 +69,8 @@ func (m model) handleCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.statusNote = "This command is unavailable while a run is in progress. Use /btw <message>."
 					return m, nil
 				}
-				m.statusNote = "Run is in progress. Use /btw <message> to interject, or Esc to interrupt."
-				return m, nil
+				m.closeCommandPalette()
+				return m.submitBTW(value)
 			}
 			m.closeCommandPalette()
 			m.input.Reset()
@@ -395,12 +395,12 @@ func (m *model) toggleMode() {
 	if m.mode == modeBuild {
 		m.mode = modePlan
 		if m.plan.Phase == planpkg.PhaseNone {
-			m.plan.Phase = planpkg.PhaseDrafting
+			m.plan.Phase = planpkg.PhaseExplore
 		}
-		m.statusNote = "Switched to Plan mode. Draft the plan before executing."
+		m.statusNote = "Switched to Plan mode. Explore, clarify, and converge the plan before executing."
 	} else {
 		m.mode = modeBuild
-		m.statusNote = "Switched to Build mode. Execution still requires confirmation."
+		m.statusNote = "Switched to Build mode. Use the current plan baseline to drive execution."
 	}
 	if m.sess != nil {
 		m.sess.Mode = planpkg.NormalizeMode(string(m.mode))
@@ -409,6 +409,7 @@ func (m *model) toggleMode() {
 			_ = m.store.Save(m.sess)
 		}
 	}
+	m.syncPlanActionPicker()
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
 		m.refreshViewport()

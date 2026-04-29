@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -19,15 +20,16 @@ func (m model) renderConversation() string {
 	for i := 0; i < len(m.chatItems); {
 		item := m.chatItems[i]
 		if item.Kind == "user" {
-			blocks = append(blocks, renderChatRow(item, width))
+			resolvedItem := item
+			if strings.Contains(item.Body, "[Paste #") || strings.Contains(item.Body, "[Pasted #") {
+				resolvedItem.Body = m.resolveUserBodyPastes(item.Body)
+			}
+			blocks = append(blocks, renderChatRow(resolvedItem, width))
 			i++
 			continue
 		}
 
 		if item.Kind == "assistant" && (item.Status == "thinking" || item.Status == "thinking_done") {
-			if rendered := m.renderThinkingRow(item, width); strings.TrimSpace(rendered) != "" {
-				blocks = append(blocks, rendered)
-			}
 			i++
 			continue
 		}
@@ -69,6 +71,11 @@ func (m model) renderConversationCopy() string {
 			continue
 		}
 
+		if item.Kind == "assistant" && (item.Status == "thinking" || item.Status == "thinking_done") {
+			i++
+			continue
+		}
+
 		j := i
 		for j < len(m.chatItems) && m.chatItems[j].Kind != "user" {
 			j++
@@ -99,6 +106,12 @@ func renderChatCopySection(item chatEntry, width int) string {
 	case "user":
 		if strings.TrimSpace(item.Meta) != "" {
 			title = strings.TrimSpace(item.Meta)
+		}
+	case "tool":
+		label, name := toolDisplayParts(title)
+		title = label
+		if strings.TrimSpace(name) != "" {
+			title += "  " + name
 		}
 	}
 
@@ -166,7 +179,7 @@ func renderChatCard(item chatEntry, width int) string {
 
 func renderChatSection(item chatEntry, width int) string {
 	title := cardTitleStyle.Foreground(colorAccent)
-	bodyStyle := chatBodyStyle
+	bodyStyle := chatBodyBlockStyle
 	status := item.Status
 	displayTitle := item.Title
 	if status == "final" {
@@ -176,15 +189,19 @@ func renderChatSection(item chatEntry, width int) string {
 	case "user":
 		title = userMessageStyle
 	case "tool":
-		if strings.HasPrefix(displayTitle, "Tool Result | ") {
+		if strings.HasPrefix(strings.ToLower(displayTitle), "tool result | ") {
 			title = toolResultTitleStyle
 		} else {
 			title = toolCallTitleStyle
 		}
-		bodyStyle = toolBodyStyle
-		status = ""
+		if strings.EqualFold(status, "error") || strings.EqualFold(status, "warn") {
+			bodyStyle = toolErrorBodyStyle
+		} else {
+			bodyStyle = toolBodyStyle
+		}
 	case "system":
 		title = cardTitleStyle.Foreground(colorMuted)
+		bodyStyle = chatMutedBodyBlockStyle
 	default:
 		if item.Status == "thinking" || item.Status == "thinking_done" {
 			if item.Status == "thinking_done" {
@@ -213,18 +230,34 @@ func renderChatSection(item chatEntry, width int) string {
 		}
 	}
 	headContent := title.Render(displayTitle)
+	if item.Kind == "tool" {
+		label, _ := toolDisplayParts(displayTitle)
+		headContent = renderToolTag(label, "info")
+	}
 	if item.Kind == "user" && strings.TrimSpace(item.Meta) != "" {
-		headContent = mutedStyle.Copy().Faint(true).Render(item.Meta)
+		headContent = chatHeaderMetaStyle.Render(item.Meta)
 	}
 	if status != "" {
-		headContent = lipgloss.JoinHorizontal(lipgloss.Left, headContent, mutedStyle.Render("  "+status))
+		statusBadgeText := status
+		if item.Kind == "tool" {
+			switch strings.TrimSpace(strings.ToLower(status)) {
+			case "done", "success":
+				statusBadgeText = "✓"
+			}
+		}
+		headContent = lipgloss.JoinHorizontal(
+			lipgloss.Left,
+			headContent,
+			"  ",
+			renderToolTag(statusBadgeText, status),
+		)
 	}
 	if item.Kind == "assistant" {
 		if badge := renderAssistantPhaseBadge(item.Status); badge != "" {
 			headContent = lipgloss.JoinHorizontal(lipgloss.Left, headContent, "  ", badge)
 		}
 	}
-	head := lipgloss.NewStyle().
+	head := chatHeaderStyle.Copy().
 		Width(width).
 		Render(headContent)
 	if item.Kind == "tool" && strings.TrimSpace(item.Body) == "" {
@@ -255,11 +288,177 @@ func renderBytemindRunRow(items []chatEntry, width int) string {
 func renderBytemindRunCard(items []chatEntry, width int) string {
 	outer := resolveRunCardStyle(items)
 	contentWidth := max(8, width-outer.GetHorizontalFrameSize())
-	sections := make([]string, 0, len(items))
-	for _, item := range items {
-		sections = append(sections, renderChatSection(item, contentWidth))
+	sectionGroups := collapseRunSectionGroups(items)
+	sections := make([]string, 0, len(sectionGroups))
+	for i, group := range sectionGroups {
+		if i > 0 {
+			sections = append(sections, renderRunSectionDivider(contentWidth))
+		}
+		sections = append(sections, renderRunSectionGroup(group, contentWidth))
 	}
 	return outer.Width(contentWidth).Render(strings.Join(sections, "\n"))
+}
+
+func collapseRunSectionGroups(items []chatEntry) [][]chatEntry {
+	groups := make([][]chatEntry, 0, len(items))
+	for i := 0; i < len(items); {
+		item := items[i]
+		name, ok := collapsibleParallelToolName(item)
+		if !ok {
+			groups = append(groups, []chatEntry{item})
+			i++
+			continue
+		}
+
+		j := i + 1
+		group := []chatEntry{item}
+		for j < len(items) {
+			nextName, nextOK := collapsibleParallelToolName(items[j])
+			if !nextOK || nextName != name {
+				break
+			}
+			group = append(group, items[j])
+			j++
+		}
+		groups = append(groups, group)
+		i = j
+	}
+	return groups
+}
+
+func collapsibleParallelToolName(item chatEntry) (string, bool) {
+	if item.Kind != "tool" {
+		return "", false
+	}
+	_, name := toolDisplayParts(item.Title)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", false
+	}
+	if toolDisplayLabel(name) != "READ" {
+		return "", false
+	}
+	return name, true
+}
+
+func renderRunSectionGroup(group []chatEntry, width int) string {
+	if len(group) == 0 {
+		return ""
+	}
+	if len(group) == 1 {
+		return renderRunSection(group[0], width)
+	}
+
+	_, name := toolDisplayParts(group[0].Title)
+	synthetic := chatEntry{
+		Kind:   "tool",
+		Title:  fmt.Sprintf("%s x %d | %s", toolDisplayLabel(name), len(group), name),
+		Body:   summarizeParallelToolGroup(group, name),
+		Status: aggregateToolGroupStatus(group),
+	}
+	return renderRunSection(synthetic, width)
+}
+
+func renderRunSection(item chatEntry, width int) string {
+	if item.Kind == "tool" {
+		style := resolveToolRunSectionStyle(item.Status)
+		contentWidth := max(8, width-style.GetHorizontalFrameSize())
+		return style.Width(contentWidth).Render(renderChatSection(item, contentWidth))
+	}
+	if item.Kind == "assistant" && item.Status == "final" {
+		contentWidth := max(8, width-runAnswerSectionStyle.GetHorizontalFrameSize())
+		return runAnswerSectionStyle.Width(contentWidth).Render(renderChatSection(item, contentWidth))
+	}
+	return renderChatSection(item, width)
+}
+
+func summarizeParallelToolGroup(group []chatEntry, name string) string {
+	if len(group) == 0 {
+		return ""
+	}
+	if toolDisplayLabel(name) == "READ" {
+		return summarizeParallelReadGroup(group)
+	}
+	return fmt.Sprintf("%d parallel %s calls", len(group), strings.ToLower(toolDisplayLabel(name)))
+}
+
+func summarizeParallelReadGroup(group []chatEntry) string {
+	fileNames := make([]string, 0, len(group))
+	for _, item := range group {
+		summary := strings.TrimSpace(firstNonEmptyLine(item.Body))
+		if summary == "" {
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimPrefix(summary, "Read "))
+		if name == "" {
+			name = summary
+		}
+		fileNames = append(fileNames, name)
+	}
+	if len(fileNames) == 0 {
+		return fmt.Sprintf("Read %d files", len(group))
+	}
+	previewCount := min(3, len(fileNames))
+	preview := strings.Join(fileNames[:previewCount], ", ")
+	if len(fileNames) > previewCount {
+		return fmt.Sprintf("Read %d files: %s +%d", len(fileNames), preview, len(fileNames)-previewCount)
+	}
+	return fmt.Sprintf("Read %d files: %s", len(fileNames), preview)
+}
+
+func aggregateToolGroupStatus(group []chatEntry) string {
+	hasDone := false
+	hasRunning := false
+	hasWarn := false
+	for _, item := range group {
+		switch strings.TrimSpace(strings.ToLower(item.Status)) {
+		case "error", "failed":
+			return "error"
+		case "warn", "warning", "pending":
+			hasWarn = true
+		case "running", "active":
+			hasRunning = true
+		case "done", "success":
+			hasDone = true
+		}
+	}
+	switch {
+	case hasWarn:
+		return "warn"
+	case hasRunning:
+		return "running"
+	case hasDone:
+		return "done"
+	default:
+		return strings.TrimSpace(group[0].Status)
+	}
+}
+
+func renderRunSectionDivider(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return runSectionDividerStyle.Width(width).Render(strings.Repeat("-", width))
+}
+
+func renderRunSectionDividerLegacy(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return runSectionDividerStyle.Width(width).Render(strings.Repeat("─", width))
+}
+
+func resolveToolRunSectionStyle(status string) lipgloss.Style {
+	switch strings.TrimSpace(strings.ToLower(status)) {
+	case "done", "success":
+		return runToolSuccessSectionStyle
+	case "warn", "warning", "pending":
+		return runToolWarningSectionStyle
+	case "error", "failed":
+		return runToolErrorSectionStyle
+	default:
+		return runToolSectionStyle
+	}
 }
 
 func (m model) renderThinkingRow(item chatEntry, width int) string {
@@ -314,14 +513,35 @@ func (m model) renderThinkingHeadline(status string) string {
 func renderAssistantPhaseBadge(status string) string {
 	switch strings.TrimSpace(strings.ToLower(status)) {
 	case "streaming":
-		return statusGeneratingStyle.Render("Generating")
+		return renderPillBadge("Generating", "running")
 	case "settling":
-		return statusSettlingStyle.Render("Finalizing")
+		return renderPillBadge("Finalizing", "pending")
 	case "final":
-		return statusFinalStyle.Render("Answer")
+		return renderPillBadge("Answer", "neutral")
 	default:
 		return ""
 	}
+}
+
+func renderToolTag(text, tagType string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	style := lipgloss.NewStyle().Bold(true)
+	switch strings.TrimSpace(strings.ToLower(tagType)) {
+	case "active", "running", "accent", "info":
+		style = style.Foreground(semanticColors.AccentSoft)
+	case "success", "done":
+		style = style.Foreground(semanticColors.Success)
+	case "warning", "pending", "warn":
+		style = style.Foreground(semanticColors.Warning)
+	case "error", "failed", "danger":
+		style = style.Foreground(semanticColors.Danger)
+	default:
+		style = style.Foreground(semanticColors.TextMuted)
+	}
+	return style.Render(text)
 }
 
 func resolveRunCardStyle(items []chatEntry) lipgloss.Style {
@@ -331,12 +551,12 @@ func resolveRunCardStyle(items []chatEntry) lipgloss.Style {
 		}
 		switch strings.TrimSpace(strings.ToLower(item.Status)) {
 		case "streaming":
-			return chatStreamingStyle
+			return runCardStreamingStyle
 		case "settling":
-			return chatSettlingStyle
+			return runCardSettlingStyle
 		}
 	}
-	return chatAssistantStyle
+	return runCardStyle
 }
 
 func renderModal(width, height int, modal string) string {

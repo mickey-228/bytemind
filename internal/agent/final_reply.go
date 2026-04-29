@@ -5,10 +5,10 @@ import (
 	"io"
 	"strings"
 
-	corepkg "bytemind/internal/core"
-	"bytemind/internal/llm"
-	planpkg "bytemind/internal/plan"
-	"bytemind/internal/session"
+	corepkg "github.com/1024XEngineer/bytemind/internal/core"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	planpkg "github.com/1024XEngineer/bytemind/internal/plan"
+	"github.com/1024XEngineer/bytemind/internal/session"
 )
 
 func (e *defaultEngine) finalizeTurnWithoutTools(runMode planpkg.AgentMode, sess *session.Session, reply llm.Message, out io.Writer, streamedText bool) (string, error) {
@@ -20,6 +20,15 @@ func (e *defaultEngine) finalizeTurnWithoutTools(runMode planpkg.AgentMode, sess
 	if answer == "" {
 		reply.Content = emptyReplyFallback
 		answer = emptyReplyFallback
+	}
+
+	latestUser := latestHumanUserMessageText(sess.Messages)
+	if shouldCondensePlanRevisionAnswer(runMode, sess.Plan, sess.Messages) {
+		condensed := condensePlanRevisionAnswer(answer, latestUser)
+		if strings.TrimSpace(condensed) != "" && condensed != answer {
+			answer = condensed
+			reply = llm.NewAssistantTextMessage(answer)
+		}
 	}
 
 	policyAnswer := planpkg.FinalizeAssistantAnswer(runMode, sess.Plan, answer)

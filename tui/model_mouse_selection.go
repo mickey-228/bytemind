@@ -99,10 +99,23 @@ func (m model) handleViewportMouseEvent(msg tea.MouseMsg) (tea.Model, tea.Cmd, b
 		}
 		return m, nil, true
 	case tea.MouseActionRelease:
-		if point, ok := m.viewportPointFromMouseWithAutoScroll(msg.X, msg.Y); ok && selectionHasRange(m.mouseSelectionStart, point) {
-			m.mouseSelectionEnd = point
-			m.mouseSelectionActive = true
-			m.statusNote = "Selection ready. Press Ctrl+C to copy."
+		if point, ok := m.viewportPointFromMouseWithAutoScroll(msg.X, msg.Y); ok {
+			if !selectionHasRange(m.mouseSelectionStart, point) {
+				if pasteID := m.pasteIDAtViewportPoint(point); pasteID != "" {
+					m.clearMouseSelection()
+					m.mouseSelecting = false
+					m.stopMouseSelectionScrollTicker()
+					m.draggingScrollbar = false
+					return m, func() tea.Msg { return togglePasteExpandMsg{PasteID: pasteID} }, true
+				}
+			}
+			if selectionHasRange(m.mouseSelectionStart, point) {
+				m.mouseSelectionEnd = point
+				m.mouseSelectionActive = true
+				m.statusNote = "Selection ready. Press Ctrl+C to copy."
+			} else {
+				m.clearMouseSelection()
+			}
 		} else {
 			m.clearMouseSelection()
 		}
@@ -423,6 +436,10 @@ func (m model) hasCopyableViewportSelection() bool {
 }
 
 func (m model) renderConversationViewport() string {
+	return m.conversationViewportComponent().Render(m)
+}
+
+func renderConversationViewportDefault(m model) string {
 	content := ""
 	if m.hasCopyableViewportSelection() {
 		if preview := m.renderActiveSelectionPreview(); strings.TrimSpace(preview) != "" {
@@ -432,10 +449,20 @@ func (m model) renderConversationViewport() string {
 	if content == "" {
 		content = m.viewport.View()
 	}
+	if m.viewport.Width > 0 && m.viewport.Height > 0 {
+		content = lipgloss.Place(m.viewport.Width, m.viewport.Height, lipgloss.Left, lipgloss.Top, content)
+	}
 	return zone.Mark(conversationViewportZoneID, content)
 }
 
 func (m model) renderInputEditorView() string {
+	return m.inputEditorViewComponent().Render(m)
+}
+
+func renderInputEditorViewDefault(m model) string {
+	if m.screen == screenLanding && !m.hasCopyableInputSelection() {
+		return m.renderLandingInputEditorView()
+	}
 	raw := m.input.View()
 	if !m.hasCopyableInputSelection() {
 		return raw
@@ -444,6 +471,72 @@ func (m model) renderInputEditorView() string {
 		return preview
 	}
 	return raw
+}
+
+func (m model) renderLandingInputEditorView() string {
+	value := strings.ReplaceAll(m.input.Value(), "\r\n", "\n")
+	showCaret := m.landingCaretVisible()
+	if value == "" {
+		placeholder := m.input.Placeholder
+		if strings.TrimSpace(placeholder) == "" {
+			placeholder = landingInputPlaceholder
+		}
+		if !showCaret || !m.input.Focused() {
+			return landingPlaceholderStyle.Render(placeholder)
+		}
+		runes := []rune(placeholder)
+		if len(runes) == 0 {
+			return ""
+		}
+		first := landingInputCaretOverlayStyle.Render(string(runes[0]))
+		rest := landingPlaceholderStyle.Render(string(runes[1:]))
+		return first + rest
+	}
+
+	rawLines := strings.Split(value, "\n")
+	lines := make([]string, len(rawLines))
+	for i := range rawLines {
+		lines[i] = landingInputValueStyle.Render(rawLines[i])
+	}
+	if !m.input.Focused() {
+		return strings.Join(lines, "\n")
+	}
+
+	row := clamp(m.input.Line(), 0, len(rawLines)-1)
+	lineRunes := []rune(rawLines[row])
+	li := m.input.LineInfo()
+	col := clamp(li.StartColumn+li.ColumnOffset, 0, len(lineRunes))
+
+	// Keep text layout stable: caret is rendered as a style overlay on current rune.
+	if col < len(lineRunes) {
+		left := landingInputValueStyle.Render(string(lineRunes[:col]))
+		mid := landingInputValueStyle.Render(string(lineRunes[col]))
+		right := landingInputValueStyle.Render(string(lineRunes[col+1:]))
+		if showCaret {
+			mid = landingInputCaretOverlayStyle.Render(string(lineRunes[col]))
+		}
+		lines[row] = left + mid + right
+		return strings.Join(lines, "\n")
+	}
+
+	// End-of-line caret keeps a stable one-cell footprint while blinking.
+	base := landingInputValueStyle.Render(string(lineRunes))
+	if showCaret {
+		lines[row] = base + landingInputCaretStyle.Render("|")
+	} else {
+		lines[row] = base + landingInputValueStyle.Render(" ")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) landingCaretVisible() bool {
+	if m.screen != screenLanding || !m.input.Focused() {
+		return false
+	}
+	// Reuse the landing animation ticker (50ms) to blink the caret smoothly.
+	// 8 ticks visible + 8 ticks hidden => ~800ms full cycle.
+	const blinkHalfCycle = 8
+	return (m.landingGlowStep/blinkHalfCycle)%2 == 0
 }
 
 func (m model) renderInputSelectionPreview(raw string) string {
@@ -705,26 +798,12 @@ func (m model) inputInnerBounds() (left, right, top, bottom, innerLeft, innerTop
 		if m.height <= 0 || m.width <= 0 {
 			return 0, 0, 0, 0, 0, 0, false
 		}
-		box := landingInputStyle.Copy().
-			BorderForeground(m.modeAccentColor()).
-			Width(m.landingInputShellWidth()).
-			Render(m.input.View())
+		box := m.renderLandingInputBox(false)
 		boxW := max(1, lipgloss.Width(box))
 		boxH := max(1, lipgloss.Height(box))
-		logoHeight := lipgloss.Height(landingLogoStyle.Render(strings.Join([]string{
-			"    ____        __                      _           __",
-			"   / __ )__  __/ /____  ____ ___  ____(_)___  ____/ /",
-			"  / __  / / / / __/ _ \\/ __ `__ \\/ __/ / __ \\/ __  / ",
-			" / /_/ / /_/ / /_/  __/ / / / / / /_/ / / / / /_/ /  ",
-			"/_____/\\__, /\\__/\\___/_/ /_/ /_/\\__/_/_/ /_/\\__,_/   ",
-			"      /____/                                          ",
-		}, "\n")))
-		overlayHeight := m.calculateOverlayHeight(1)
-		modeTabsHeight := lipgloss.Height(m.renderModeTabs())
-		hintHeight := lipgloss.Height(mutedStyle.Render(footerHintText))
-		contentHeight := logoHeight + 1 + modeTabsHeight + 1 + overlayHeight + boxH + 1 + hintHeight
-		contentTop := max(0, (m.height-contentHeight)/2)
-		top = contentTop + logoHeight + 1 + modeTabsHeight + 1 + overlayHeight
+		contentHeight := m.landingContentHeight()
+		contentTop := m.landingContentTop(contentHeight)
+		top = m.landingInputTop(contentTop)
 		left = max(0, (m.width-boxW)/2)
 		right = left + boxW - 1
 		bottom = top + boxH - 1
@@ -813,4 +892,26 @@ func highlightVisibleLineByCells(line string, startCol, endCol int) string {
 
 func selectionHasRange(start, end viewportSelectionPoint) bool {
 	return start.Row != end.Row || start.Col != end.Col
+}
+
+func (m model) pasteIDAtViewportPoint(point viewportSelectionPoint) string {
+	lines := m.selectionSourceLines()
+	if point.Row < 0 || point.Row >= len(lines) {
+		return ""
+	}
+	for row := point.Row; row >= 0; row-- {
+		line := lines[row]
+		match := compressedPasteMarkerAnyPattern.FindString(line)
+		if match != "" {
+			details := compressedPasteMarkerDetailsPattern.FindStringSubmatch(match)
+			if len(details) >= 2 {
+				return details[1]
+			}
+			return ""
+		}
+		if row != point.Row && strings.TrimSpace(stripANSI(line)) == "" {
+			break
+		}
+	}
+	return ""
 }

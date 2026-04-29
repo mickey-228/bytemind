@@ -4,12 +4,13 @@ import (
 	"errors"
 	"strings"
 
-	"bytemind/internal/llm"
+	"github.com/1024XEngineer/bytemind/internal/llm"
 )
 
 const (
 	ProviderOpenAI    ProviderID = "openai"
 	ProviderAnthropic ProviderID = "anthropic"
+	ProviderGemini    ProviderID = "gemini"
 )
 
 type ErrorCode string

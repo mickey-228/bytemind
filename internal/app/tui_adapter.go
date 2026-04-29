@@ -5,13 +5,13 @@ import (
 	"errors"
 	"io"
 
-	"bytemind/internal/agent"
-	"bytemind/internal/config"
-	"bytemind/internal/llm"
-	"bytemind/internal/session"
-	"bytemind/internal/skills"
-	"bytemind/internal/tools"
-	"bytemind/tui"
+	"github.com/1024XEngineer/bytemind/internal/agent"
+	"github.com/1024XEngineer/bytemind/internal/config"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	"github.com/1024XEngineer/bytemind/internal/session"
+	"github.com/1024XEngineer/bytemind/internal/skills"
+	"github.com/1024XEngineer/bytemind/internal/tools"
+	"github.com/1024XEngineer/bytemind/tui"
 )
 
 type tuiRunnerAdapter struct {
@@ -52,14 +52,19 @@ func (a *tuiRunnerAdapter) SetApprovalHandler(handler tui.ApprovalHandler) {
 	if a == nil || a.runner == nil {
 		return
 	}
-	a.runner.SetApprovalHandler(func(req tools.ApprovalRequest) (bool, error) {
+	a.runner.SetApprovalHandler(func(req tools.ApprovalRequest) (tools.ApprovalDecision, error) {
 		if handler == nil {
-			return false, nil
+			return tools.ApprovalDecision{Disposition: tools.ApprovalDeny}, nil
 		}
-		return handler(tui.ApprovalRequest{
-			Command: req.Command,
-			Reason:  req.Reason,
+		decision, err := handler(tui.ApprovalRequest{
+			ToolName: req.ToolName,
+			Command:  req.Command,
+			Reason:   req.Reason,
 		})
+		if err != nil {
+			return tools.ApprovalDecision{}, err
+		}
+		return tools.ApprovalDecision{Disposition: tools.ApprovalDisposition(decision.Disposition)}, nil
 	})
 }
 

@@ -6,9 +6,10 @@ import (
 	"io"
 	"os"
 
-	"bytemind/internal/assets"
-	"bytemind/internal/config"
-	"bytemind/tui"
+	"github.com/1024XEngineer/bytemind/internal/assets"
+	"github.com/1024XEngineer/bytemind/internal/config"
+	"github.com/1024XEngineer/bytemind/internal/mcpctl"
+	"github.com/1024XEngineer/bytemind/tui"
 )
 
 type TUIRequest struct {
@@ -103,10 +104,12 @@ func BuildTUIRuntime(req TUIRequest) (TUIRuntime, error) {
 		Options: tui.Options{
 			Runner:       newTUIRunnerAdapter(runner),
 			Store:        runtimeBundle.Store,
+			MCPService:   mcpctl.NewService(workspace, *configPath, runtimeBundle.Extensions),
 			Session:      runtimeBundle.Session,
 			ImageStore:   imageStore,
 			Config:       cfg,
 			Workspace:    runtimeBundle.Session.Workspace,
+			Version:      CurrentVersion(),
 			StartupGuide: guide,
 		},
 		close: runner.Close,

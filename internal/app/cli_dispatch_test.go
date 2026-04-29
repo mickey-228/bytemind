@@ -38,8 +38,15 @@ func TestDispatchCLIRoutesSubcommands(t *testing.T) {
 			calls = append(calls, call{name: "install", args: append([]string(nil), args...)})
 			return nil
 		},
+		RunMCP: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+			calls = append(calls, call{name: "mcp", args: append([]string(nil), args...)})
+			return nil
+		},
 		RenderUsage: func(w io.Writer) {
 			calls = append(calls, call{name: "help"})
+		},
+		RenderVersion: func(w io.Writer) {
+			calls = append(calls, call{name: "version"})
 		},
 	}
 
@@ -54,7 +61,12 @@ func TestDispatchCLIRoutesSubcommands(t *testing.T) {
 		{name: "run -> oneshot", args: []string{"run", "-prompt", "hello"}, wantCall: call{name: "run", args: []string{"-prompt", "hello"}}},
 		{name: "worker -> sandbox worker", args: []string{"worker", "--sandbox-stdio"}, wantCall: call{name: "worker", args: []string{"--sandbox-stdio"}}},
 		{name: "install -> installer", args: []string{"install", "-to", "bin"}, wantCall: call{name: "install", args: []string{"-to", "bin"}}},
+		{name: "mcp -> mcp handler", args: []string{"mcp", "list"}, wantCall: call{name: "mcp", args: []string{"list"}}},
 		{name: "help -> render usage", args: []string{"help"}, wantCall: call{name: "help"}},
+		{name: "--version -> render version", args: []string{"--version"}, wantCall: call{name: "version"}},
+		{name: "version -> render version", args: []string{"version"}, wantCall: call{name: "version"}},
+		{name: "--yolo -> tui with away mode", args: []string{"--yolo"}, wantCall: call{name: "tui", args: []string{"-approval-mode", "away", "-away-policy", "auto_deny_continue"}}},
+		{name: "--yolo keeps tui flags and forces away mode", args: []string{"--yolo", "-workspace", "."}, wantCall: call{name: "tui", args: []string{"-workspace", ".", "-approval-mode", "away", "-away-policy", "auto_deny_continue"}}},
 		{name: "unknown -> tui passthrough", args: []string{"custom", "arg"}, wantCall: call{name: "tui", args: []string{"custom", "arg"}}},
 	}
 
@@ -81,10 +93,12 @@ func TestDispatchCLIPropagatesHandlerError(t *testing.T) {
 		RunTUI: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			return expected
 		},
-		RunOneShot:  func(args []string, stdin io.Reader, stdout, stderr io.Writer) error { return nil },
-		RunWorker:   func(args []string, stdin io.Reader, stdout, stderr io.Writer) error { return nil },
-		RunInstall:  func(args []string, stdout, stderr io.Writer) error { return nil },
-		RenderUsage: func(w io.Writer) {},
+		RunOneShot:    func(args []string, stdin io.Reader, stdout, stderr io.Writer) error { return nil },
+		RunWorker:     func(args []string, stdin io.Reader, stdout, stderr io.Writer) error { return nil },
+		RunInstall:    func(args []string, stdout, stderr io.Writer) error { return nil },
+		RunMCP:        func(args []string, stdin io.Reader, stdout, stderr io.Writer) error { return nil },
+		RenderUsage:   func(w io.Writer) {},
+		RenderVersion: func(w io.Writer) {},
 	}
 	err := DispatchCLI([]string{"chat"}, bytes.NewBuffer(nil), io.Discard, io.Discard, handlers)
 	if !errors.Is(err, expected) {

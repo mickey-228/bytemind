@@ -6,19 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"bytemind/internal/assets"
-	"bytemind/internal/config"
-	"bytemind/internal/history"
-	"bytemind/internal/llm"
-	"bytemind/internal/mention"
-	planpkg "bytemind/internal/plan"
-	"bytemind/internal/session"
+	"github.com/1024XEngineer/bytemind/internal/assets"
+	"github.com/1024XEngineer/bytemind/internal/config"
+	"github.com/1024XEngineer/bytemind/internal/history"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	"github.com/1024XEngineer/bytemind/internal/mention"
+	planpkg "github.com/1024XEngineer/bytemind/internal/plan"
+	"github.com/1024XEngineer/bytemind/internal/session"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -34,7 +35,7 @@ const (
 	scrollStep                 = 3
 	scrollbarWidth             = 1
 	mouseZoneAutoProbeMaxDelta = 4
-	commandPageSize            = 3
+	commandPageSize            = 5
 	mentionPageSize            = 5
 	maxPendingBTW              = 5
 	promptSearchPageSize       = 5
@@ -46,10 +47,14 @@ const (
 	thinkingLabel              = "thinking"
 	chatTitleLabel             = "Bytemind Chat"
 	tuiTitleLabel              = "Bytemind TUI"
-	footerHintText             = "tab agents | / commands | drag select | Ctrl+A away | Ctrl+C copy/quit | Ctrl+L sessions"
+	footerHintText             = "tab agents | / commands | drag select | Ctrl+A full-access | Ctrl+C copy/quit | Ctrl+L sessions"
 	conversationViewportZoneID = "bytemind:conversation:viewport"
 	inputEditorZoneID          = "bytemind:input:editor"
 	thinkingSpinnerFPS         = 80 * time.Millisecond
+	landingGlowTickInterval    = 50 * time.Millisecond
+	pasteAggregateDebounce     = 120 * time.Millisecond
+	pasteBurstSettleDelay      = 120 * time.Millisecond
+	hiddenPasteProbeDelay      = 45 * time.Millisecond
 )
 
 type footerShortcutHint struct {
@@ -60,9 +65,9 @@ type footerShortcutHint struct {
 var footerShortcutHints = []footerShortcutHint{
 	{Key: "tab", Label: "agents"},
 	{Key: "/", Label: "commands"},
-	{Key: "Ctrl+A", Label: "away"},
-	{Key: "Ctrl+L", Label: "sessions"},
 	{Key: "Ctrl+C", Label: "copy/quit"},
+	{Key: "Ctrl+L", Label: "sessions"},
+	{Key: "Ctrl+A", Label: "full-access"},
 }
 
 var promptSearchFilterHints = []footerShortcutHint{
@@ -72,8 +77,8 @@ var promptSearchFilterHints = []footerShortcutHint{
 
 var promptSearchActionHints = []footerShortcutHint{
 	{Key: "PgUp/PgDn", Label: "page"},
-	{Key: "Down/J", Label: "next"},
-	{Key: "Up/K", Label: "prev"},
+	{Key: "Down", Label: "next"},
+	{Key: "Up", Label: "prev"},
 	{Key: "Enter", Label: "apply"},
 	{Key: "Esc", Label: "close"},
 }
@@ -159,15 +164,26 @@ type toolRun struct {
 }
 
 type approvalPrompt struct {
-	Command string
-	Reason  string
-	Reply   chan approvalDecision
+	ToolName string
+	Command  string
+	Reason   string
+	Cursor   int
+	Reply    chan approvalDecision
+	Kind     string
+	Choice   int
 }
 
 type approvalDecision struct {
-	Approved bool
+	Decision ApprovalDecision
 	Err      error
 }
+
+const (
+	approvalPromptKindTool             = "tool"
+	approvalPromptKindEnableFullAccess = "enable_full_access"
+	approvalChoiceApprove              = 0
+	approvalChoiceReject               = 1
+)
 
 type approvalModeUpdater interface {
 	UpdateApprovalMode(mode string)
@@ -191,9 +207,25 @@ const (
 	runFinishReasonBTWRestart runFinishReason = "btw_restart"
 )
 
+type runIndicatorState string
+
+const (
+	runIndicatorReady    runIndicatorState = "ready"
+	runIndicatorRunning  runIndicatorState = "running"
+	runIndicatorComplete runIndicatorState = "complete"
+	runIndicatorCanceled runIndicatorState = "canceled"
+	runIndicatorFailed   runIndicatorState = "failed"
+)
+
 type approvalRequestMsg struct {
 	Request ApprovalRequest
 	Reply   chan approvalDecision
+}
+
+type approvalOption struct {
+	Label       string
+	Description string
+	Decision    ApprovalDisposition
 }
 
 type promptHistoryLoadedMsg struct {
@@ -222,6 +254,12 @@ type mouseSelectionScrollTickMsg struct {
 	ID int
 }
 
+type landingGlowTickMsg struct{}
+
+type pasteFinalizeMsg struct {
+	ID int
+}
+
 type pasteTransactionState struct {
 	Active             bool
 	Source             string
@@ -232,16 +270,70 @@ type pasteTransactionState struct {
 	AwaitTrailingEnter bool
 }
 
+type pasteBurstSettleMsg struct {
+	Generation int
+}
+
+type hiddenPasteProbeFlushMsg struct {
+	ID int
+}
+
+type togglePasteExpandMsg struct {
+	PasteID string
+}
+
+type togglePasteExpandAllMsg struct{}
+
+type mcpCommandResultMsg struct {
+	Input    string
+	Response string
+	Status   string
+	Err      error
+}
+
+type pasteSessionState struct {
+	active       bool
+	startedAt    time.Time
+	lastEventAt  time.Time
+	sourceKind   string
+	baseInput    string
+	bufferedText string
+	sawMultiline bool
+	finalizeID   int
+}
+
 type virtualPastePart struct {
 	PartID      string
 	PasteID     string
 	Placeholder string
 }
 
+type pasteBurstCandidateState struct {
+	active      bool
+	baseInput   string
+	startedAt   time.Time
+	lastEventAt time.Time
+	charCount   int
+	eventCount  int
+}
+
+type hiddenPasteProbeState struct {
+	active      bool
+	baseInput   string
+	clipboard   string
+	buffered    string
+	startedAt   time.Time
+	lastEventAt time.Time
+	flushID     int
+}
+
 var commandItems = []commandItem{
 	{Name: "/help", Usage: "/help", Description: "Show usage and supported commands.", Kind: "command"},
 	{Name: "/session", Usage: "/session", Description: "Open the recent session list.", Kind: "command"},
 	{Name: "/skills-select", Usage: "/skills-select", Description: "Open the loaded skills picker.", Kind: "command"},
+	{Name: "/mcp list", Usage: "/mcp list", Description: "List configured MCP servers and current status.", Kind: "command"},
+	{Name: "/mcp help", Usage: "/mcp help", Description: "Show MCP command help.", Kind: "command"},
+	{Name: "/mcp show", Usage: "/mcp show <id>", Description: "Show one MCP server config and runtime state.", Kind: "command"},
 	{Name: "/new", Usage: "/new", Description: "Start a fresh session in this workspace.", Kind: "command"},
 	{Name: "/compact", Usage: "/compact", Description: "Compress long session history into a continuation summary.", Kind: "command"},
 	{Name: "/btw", Usage: "/btw <message>", Description: "Interject while a run is in progress.", Kind: "command"},
@@ -253,10 +345,12 @@ var commandItems = []commandItem{
 type model struct {
 	runner     Runner
 	store      SessionStore
+	mcpService MCPService
 	sess       *session.Session
 	imageStore assets.ImageStore
 	cfg        config.Config
 	workspace  string
+	version    string
 
 	width  int
 	height int
@@ -273,6 +367,8 @@ type model struct {
 	chatItems                  []chatEntry
 	toolRuns                   []toolRun
 	plan                       planpkg.State
+	planAction                 *planActionPicker
+	planActionOpen             bool
 	sessions                   []session.Summary
 	sessionLimit               int
 	sessionCursor              int
@@ -286,13 +382,18 @@ type model struct {
 	commandOpen                bool
 	mentionOpen                bool
 	promptSearchOpen           bool
+	mcpCommandPending          bool
 	busy                       bool
 	runStartedAt               time.Time
+	lastRunDuration            time.Duration
+	runIndicatorState          runIndicatorState
 	streamingIndex             int
 	statusNote                 string
 	phase                      string
 	llmConnected               bool
 	approval                   *approvalPrompt
+	sessionApprovalAll         bool
+	sessionApprovedTools       map[string]struct{}
 	mentionQuery               string
 	mentionToken               mention.Token
 	mentionResults             []mention.Candidate
@@ -300,8 +401,11 @@ type model struct {
 	mentionRecent              map[string]int
 	mentionSeq                 int
 	lastPasteAt                time.Time
+	pasteSubmitGuardUntil      time.Time
 	lastInputAt                time.Time
 	inputBurstSize             int
+	inputBurstBaseValue        string
+	pasteBurstCandidate        pasteBurstCandidateState
 	clipboardCaptureArmedUntil time.Time
 	chatAutoFollow             bool
 	draggingScrollbar          bool
@@ -345,10 +449,18 @@ type model struct {
 	pastedOrder                []string
 	nextPasteID                int
 	pastedStateLoaded          bool
+	pasteExpandLevel           map[string]int // 0=collapsed, 1=preview (first 10 lines), 2=full
 	lastCompressedPasteAt      time.Time
 	virtualPasteParts          []virtualPastePart
 	nextVirtualPastePart       int
 	pasteTransaction           pasteTransactionState
+	pasteSession               pasteSessionState
+	pasteConfirmPending        bool
+	pasteBurstActive           bool
+	pasteBurstLastEventAt      time.Time
+	pasteBurstSource           string
+	pasteBurstGeneration       int
+	hiddenPasteProbe           hiddenPasteProbeState
 	clipboard                  clipboardImageReader
 	clipboardRead              clipboardTextReader
 	clipboardText              clipboardTextWriter
@@ -360,6 +472,7 @@ type model struct {
 	activeRunID                int
 	startupGuide               StartupGuide
 	mouseYOffset               int
+	landingGlowStep            int
 }
 
 func newModel(opts Options) model {
@@ -396,15 +509,23 @@ func newModel(opts Options) model {
 		opts.Runner.SetObserver(func(event Event) {
 			async <- agentEventMsg{Event: event}
 		})
+		opts.Runner.SetApprovalHandler(func(req ApprovalRequest) (ApprovalDecision, error) {
+			reply := make(chan approvalDecision, 1)
+			async <- approvalRequestMsg{Request: req, Reply: reply}
+			decision := <-reply
+			return NormalizeApprovalDecision(decision.Decision), decision.Err
+		})
 	}
 
 	m := model{
 		runner:               opts.Runner,
 		store:                opts.Store,
+		mcpService:           opts.MCPService,
 		sess:                 opts.Session,
 		imageStore:           opts.ImageStore,
 		cfg:                  opts.Config,
 		workspace:            opts.Workspace,
+		version:              opts.Version,
 		async:                async,
 		viewport:             vp,
 		copyView:             copyVP,
@@ -419,9 +540,11 @@ func newModel(opts Options) model {
 		screen:               initialScreen(opts.Session),
 		mode:                 toAgentMode(opts.Session.Mode),
 		streamingIndex:       -1,
+		runIndicatorState:    runIndicatorReady,
 		statusNote:           "Ready.",
 		phase:                "idle",
 		llmConnected:         true,
+		sessionApprovedTools: make(map[string]struct{}),
 		chatAutoFollow:       true,
 		mentionIndex:         mention.NewWorkspaceFileIndex(opts.Workspace),
 		tokenUsage:           newTokenUsageComponent(),
@@ -433,6 +556,7 @@ func newModel(opts Options) model {
 		nextImageID:          nextSessionImageID(opts.Session),
 		pastedContents:       make(map[string]pastedContent, maxStoredPastedContents),
 		pastedOrder:          make([]string, 0, maxStoredPastedContents),
+		pasteExpandLevel:     make(map[string]int),
 		nextPasteID:          1,
 		virtualPasteParts:    make([]virtualPastePart, 0, maxStoredPastedContents),
 		nextVirtualPastePart: 1,
@@ -454,12 +578,12 @@ func newModel(opts Options) model {
 	m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
 	m.ensureSessionImageAssets()
 	m.ensurePastedContentState()
+	m.syncPlanActionPicker()
 	m.syncInputStyle()
 	m.syncInputOverlays()
 	if m.mentionIndex != nil {
 		go m.mentionIndex.Prewarm()
 	}
-	m.installApprovalBridge()
 	return m
 }
 
@@ -468,11 +592,11 @@ func (m *model) installApprovalBridge() {
 		return
 	}
 	async := m.async
-	m.runner.SetApprovalHandler(func(req ApprovalRequest) (bool, error) {
+	m.runner.SetApprovalHandler(func(req ApprovalRequest) (ApprovalDecision, error) {
 		reply := make(chan approvalDecision, 1)
 		async <- approvalRequestMsg{Request: req, Reply: reply}
 		decision := <-reply
-		return decision.Approved, decision.Err
+		return NormalizeApprovalDecision(decision.Decision), decision.Err
 	})
 }
 
@@ -494,17 +618,105 @@ func resolveMouseYOffset() int {
 	return clamp(value, -10, 10)
 }
 
+func approvalToolKey(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func (m model) approvalOptions() []approvalOption {
+	return []approvalOption{
+		{
+			Label:       "Approve this operation only",
+			Description: "Allow just the current request; the same tool will ask again the next time approval is needed.",
+			Decision:    ApprovalApproveOnce,
+		},
+		{
+			Label:       "Approve later requests from this tool",
+			Description: "Auto-approve later approval requests from the same tool for the rest of this TUI session.",
+			Decision:    ApprovalApproveSameToolSession,
+		},
+		{
+			Label:       "Disable approvals for this TUI session",
+			Description: "Auto-approve all later approval requests in this TUI session without changing global config.",
+			Decision:    ApprovalApproveAllSession,
+		},
+	}
+}
+
+func (m *model) resetSessionApprovalState() {
+	if m == nil {
+		return
+	}
+	m.sessionApprovalAll = false
+	m.sessionApprovedTools = make(map[string]struct{})
+}
+
+func (m *model) cachedApprovalDecision(req ApprovalRequest) (ApprovalDecision, bool) {
+	if m == nil {
+		return ApprovalDecision{}, false
+	}
+	if m.sessionApprovalAll {
+		return ApprovalDecision{Disposition: ApprovalApproveAllSession}, true
+	}
+	toolKey := approvalToolKey(req.ToolName)
+	if toolKey == "" {
+		return ApprovalDecision{}, false
+	}
+	if _, ok := m.sessionApprovedTools[toolKey]; ok {
+		return ApprovalDecision{Disposition: ApprovalApproveSameToolSession}, true
+	}
+	return ApprovalDecision{}, false
+}
+
+func (m *model) rememberApprovalDecision(req ApprovalRequest, decision ApprovalDecision) {
+	if m == nil {
+		return
+	}
+	decision = NormalizeApprovalDecision(decision)
+	switch decision.Disposition {
+	case ApprovalApproveAllSession:
+		m.sessionApprovalAll = true
+	case ApprovalApproveSameToolSession:
+		toolKey := approvalToolKey(req.ToolName)
+		if toolKey == "" {
+			return
+		}
+		if m.sessionApprovedTools == nil {
+			m.sessionApprovedTools = make(map[string]struct{})
+		}
+		m.sessionApprovedTools[toolKey] = struct{}{}
+	}
+}
+
 func (m model) Init() tea.Cmd {
+	landingTick := tea.Cmd(nil)
+	if m.screen == screenLanding {
+		landingTick = landingGlowTickCmd()
+	}
 	return tea.Batch(
 		tea.EnableBracketedPaste,
 		textarea.Blink,
 		waitForAsync(m.async),
 		m.tokenUsage.tickCmd(),
 		m.loadSessionsCmd(),
+		landingTick,
 	)
 }
 
+func landingGlowTickCmd() tea.Cmd {
+	return tea.Tick(landingGlowTickInterval, func(time.Time) tea.Msg {
+		return landingGlowTickMsg{}
+	})
+}
+
+func (m model) startLandingGlowOnTransition(previous screenKind) tea.Cmd {
+	if previous != screenLanding && m.screen == screenLanding {
+		return landingGlowTickCmd()
+	}
+	return nil
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	pasteDebugf("update %s %s", summarizePasteMsg(msg), m.pasteDebugState())
 	if payload, ok := extractBracketedPastePayload(msg); ok {
 		return m.handlePastePayload(payload)
 	}
@@ -533,6 +745,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runFinishedMsg:
 		if msg.RunID > 0 && msg.RunID != m.activeRunID {
 			return m, waitForAsync(m.async)
+		}
+		elapsed := time.Duration(0)
+		if !m.runStartedAt.IsZero() {
+			elapsed = time.Since(m.runStartedAt)
+			if elapsed < 0 {
+				elapsed = 0
+			}
 		}
 		m.busy = false
 		m.runCancel = nil
@@ -569,34 +788,59 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingBTW = nil
 		switch finishReason {
 		case runFinishReasonCompleted:
+			m.lastRunDuration = elapsed
+			m.runIndicatorState = runIndicatorComplete
 			if !m.shouldKeepStreamingIndexOnRunFinished() {
 				m.streamingIndex = -1
 			}
-			m.statusNote = "Ready."
 			m.phase = "idle"
+			if m.mode == modePlan {
+				m.syncPlanActionPicker()
+				m.statusNote = planActionStatusNote(m.plan)
+			} else {
+				m.closePlanActionPicker()
+				m.statusNote = "Ready."
+			}
 		case runFinishReasonCanceled:
+			m.lastRunDuration = elapsed
+			m.runIndicatorState = runIndicatorCanceled
 			m.streamingIndex = -1
+			m.closePlanActionPicker()
 			m.statusNote = "Run canceled."
 			m.phase = "idle"
 			m.llmConnected = true
 		case runFinishReasonFailed:
+			m.lastRunDuration = elapsed
+			m.runIndicatorState = runIndicatorFailed
 			m.streamingIndex = -1
+			m.closePlanActionPicker()
 			m.statusNote = "Run failed: " + msg.Err.Error()
 			m.phase = "error"
 			m.llmConnected = false
 			m.failLatestAssistant(msg.Err.Error())
 		default:
+			m.lastRunDuration = 0
+			m.runIndicatorState = runIndicatorReady
 			m.streamingIndex = -1
+			m.closePlanActionPicker()
 			m.statusNote = "Ready."
 			m.phase = "idle"
 		}
 		m.refreshViewport()
 		return m, tea.Batch(waitForAsync(m.async), m.loadSessionsCmd())
 	case approvalRequestMsg:
+		if decision, ok := m.cachedApprovalDecision(msg.Request); ok {
+			msg.Reply <- approvalDecision{Decision: decision}
+			return m, waitForAsync(m.async)
+		}
 		m.approval = &approvalPrompt{
-			Command: msg.Request.Command,
-			Reason:  msg.Request.Reason,
-			Reply:   msg.Reply,
+			ToolName: msg.Request.ToolName,
+			Command:  msg.Request.Command,
+			Reason:   msg.Request.Reason,
+			Cursor:   0,
+			Reply:    msg.Reply,
+			Kind:     approvalPromptKindTool,
+			Choice:   approvalChoiceApprove,
 		}
 		m.statusNote = "Approval required."
 		m.phase = "approval"
@@ -638,6 +882,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case mcpCommandResultMsg:
+		m.mcpCommandPending = false
+		if msg.Err != nil {
+			m.statusNote = msg.Err.Error()
+			return m, waitForAsync(m.async)
+		}
+		m.appendCommandExchange(msg.Input, msg.Response)
+		if strings.TrimSpace(msg.Status) != "" {
+			m.statusNote = msg.Status
+		}
+		m.refreshViewport()
+		return m, waitForAsync(m.async)
 	case tokenUsagePulledMsg:
 		// Account-level usage is not session-accurate; ignore in session-only mode.
 		return m, nil
@@ -646,26 +902,80 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectionToast = ""
 		}
 		return m, nil
+	case pasteFinalizeMsg:
+		if !m.hasActivePasteSession() {
+			return m, nil
+		}
+		m.finalizePasteSession(msg.ID)
+		if m.hasActivePasteBurst() {
+			return m, schedulePasteBurstSettle(m.pasteBurstGeneration)
+		}
+		return m, nil
+	case pasteBurstSettleMsg:
+		if !m.hasActivePasteBurst() || msg.Generation != m.pasteBurstGeneration {
+			return m, nil
+		}
+		if m.hasActivePasteSession() {
+			return m, schedulePasteBurstSettle(msg.Generation)
+		}
+		if !m.pasteBurstLastEventAt.IsZero() && time.Since(m.pasteBurstLastEventAt) < pasteBurstSettleDelay {
+			return m, schedulePasteBurstSettle(msg.Generation)
+		}
+		m.clearPasteBurstCapture()
+		return m, nil
+	case hiddenPasteProbeFlushMsg:
+		if !m.hiddenPasteProbe.active || msg.ID != m.hiddenPasteProbe.flushID {
+			return m, nil
+		}
+		m.flushHiddenPasteProbeToInput()
+		m.syncInputOverlays()
+		return m, nil
+	case togglePasteExpandMsg:
+		if m.pasteExpandLevel == nil {
+			m.pasteExpandLevel = make(map[string]int)
+		}
+		m.pasteExpandLevel[msg.PasteID] = (m.pasteExpandLevel[msg.PasteID] + 1) % 3
+		m.refreshViewport()
+		return m, nil
+	case togglePasteExpandAllMsg:
+		if m.pasteExpandLevel == nil {
+			m.pasteExpandLevel = make(map[string]int)
+		}
+		allFull := true
+		for _, id := range m.pastedOrder {
+			if m.pasteExpandLevel[id] != 2 {
+				allFull = false
+				break
+			}
+		}
+		newLevel := 2
+		if allFull {
+			newLevel = 0
+		}
+		for _, id := range m.pastedOrder {
+			m.pasteExpandLevel[id] = newLevel
+		}
+		m.refreshViewport()
+		return m, nil
 	case mouseSelectionScrollTickMsg:
 		return m.handleMouseSelectionScrollTick(msg)
 	case tokenMonitorTickMsg:
 		cmd, _ := m.tokenUsage.Update(msg)
 		return m, cmd
+	case landingGlowTickMsg:
+		if m.screen != screenLanding {
+			return m, nil
+		}
+		m.landingGlowStep = (m.landingGlowStep + 1) % 2048
+		return m, landingGlowTickCmd()
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 
-	if !m.sessionsOpen && !m.helpOpen && !m.commandOpen && m.approval == nil {
-		before := m.input.Value()
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		if m.input.Value() != before {
-			m.handleInputMutation(before, m.input.Value(), "")
-			m.syncInputOverlays()
-		}
-		return m, cmd
+	if !m.sessionsOpen && !m.helpOpen && !m.commandOpen && !m.planActionOpen && m.approval == nil {
+		return m.defaultInputComponent().Update(m, msg)
 	}
 
 	return m, nil
@@ -691,6 +1001,76 @@ func normalizeKeyName(key string) string {
 	return replacer.Replace(key)
 }
 
+func pasteDebugEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BYTEMIND_DEBUG_PASTE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func pasteDebugLogPath() string {
+	return filepath.Join(os.TempDir(), "bytemind-paste-debug.log")
+}
+
+func pasteDebugf(format string, args ...any) {
+	if !pasteDebugEnabled() {
+		return
+	}
+	f, err := os.OpenFile(pasteDebugLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = fmt.Fprintf(f, "%s "+format+"\n", append([]any{time.Now().Format(time.RFC3339Nano)}, args...)...)
+}
+
+func summarizePasteMsg(msg tea.Msg) string {
+	if msg == nil {
+		return "<nil>"
+	}
+	if key, ok := msg.(tea.KeyMsg); ok {
+		joined := string(key.Runes)
+		return fmt.Sprintf(
+			"KeyMsg{type=%v str=%q paste=%v alt=%v runes=%d hasTab=%v hasNL=%v}",
+			key.Type,
+			key.String(),
+			key.Paste,
+			key.Alt,
+			len(key.Runes),
+			strings.Contains(joined, "\t"),
+			strings.ContainsAny(joined, "\r\n"),
+		)
+	}
+	t := reflect.TypeOf(msg)
+	if t == nil {
+		return "<unknown>"
+	}
+	return t.String()
+}
+
+func (m model) pasteDebugState() string {
+	lastInputAgo := "n/a"
+	if !m.lastInputAt.IsZero() {
+		lastInputAgo = time.Since(m.lastInputAt).Round(time.Millisecond).String()
+	}
+	return fmt.Sprintf(
+		"state{screen=%s mode=%s inputLen=%d burst=%d candidate=%v/%d/%d session=%v capture=%v confirm=%v lastInputAgo=%s}",
+		m.screen,
+		m.mode,
+		len([]rune(m.input.Value())),
+		m.inputBurstSize,
+		m.pasteBurstCandidate.active,
+		m.pasteBurstCandidate.eventCount,
+		m.pasteBurstCandidate.charCount,
+		m.hasActivePasteSession(),
+		m.hasActivePasteBurst(),
+		m.pasteConfirmPending,
+		lastInputAgo,
+	)
+}
+
 func isInputNewlineKey(msg tea.KeyMsg) bool {
 	if msg.Type == tea.KeyCtrlJ || normalizeKeyName(msg.String()) == "ctrl+j" {
 		return true
@@ -709,18 +1089,140 @@ func isCtrlVPasteKey(msg tea.KeyMsg) bool {
 	if len(msg.Runes) == 1 && msg.Runes[0] == []rune(ctrlVMarkerRune)[0] {
 		return true
 	}
-	key := normalizeKeyName(msg.String())
-	return key == "ctrl+v" || key == "ctrl+shift+v" || key == "shift+insert"
+	return normalizeKeyName(msg.String()) == "ctrl+v"
 }
 
-func isAltVImagePasteKey(msg tea.KeyMsg) bool {
-	if normalizeKeyName(msg.String()) == "alt+v" {
-		return true
-	}
-	if !msg.Alt || msg.Type != tea.KeyRunes || len(msg.Runes) != 1 {
+func allowsImmediateSingleRuneClipboardCapture(currentInput, fragment string) bool {
+	fragment = strings.TrimSpace(fragment)
+	if len([]rune(fragment)) != 1 || len(fragment) <= 1 {
 		return false
 	}
-	return strings.EqualFold(string(msg.Runes[0]), "v")
+	trimmed := strings.TrimSpace(currentInput)
+	if trimmed == "" {
+		return true
+	}
+	chain, ok := extractLeadingCompressedMarker(trimmed)
+	return ok && chain == trimmed
+}
+
+func shouldProbeImplicitClipboardFragment(currentInput, fragment string) bool {
+	trimmedFragment := strings.TrimSpace(fragment)
+	if trimmedFragment == "" {
+		return false
+	}
+	trimmedInput := strings.TrimSpace(currentInput)
+	inputBoundary := trimmedInput == ""
+	if !inputBoundary {
+		if chain, ok := extractLeadingCompressedMarker(trimmedInput); ok && chain == trimmedInput {
+			inputBoundary = true
+		}
+	}
+	runeCount := len([]rune(trimmedFragment))
+	switch {
+	case runeCount == 1:
+		return allowsImmediateSingleRuneClipboardCapture(currentInput, trimmedFragment)
+	case strings.Contains(fragment, "\n") || strings.Contains(fragment, "\t"):
+		return true
+	case runeCount >= clipboardCaptureMinPrefixRunes:
+		return inputBoundary || looksLikePastedFragment(trimmedFragment)
+	case allowsEarlyClipboardCapture(trimmedFragment):
+		return inputBoundary
+	default:
+		return false
+	}
+}
+
+func (m *model) commitImplicitClipboardPaste(prefix, clipboardText string) bool {
+	if m == nil {
+		return false
+	}
+	if strings.TrimSpace(prefix) == "" || strings.TrimSpace(clipboardText) == "" {
+		return false
+	}
+	marker, content, err := m.compressPastedText(clipboardText)
+	if err != nil {
+		m.statusNote = err.Error()
+		return false
+	}
+	base := m.input.Value()
+	if m.hiddenPasteProbe.active {
+		base = m.hiddenPasteProbe.baseInput
+	}
+	m.beginPasteTransaction(clipboardText, "clipboard-capture")
+	m.pasteTransaction.Consumed = len([]rune(prefix))
+	m.setInputValue(base + marker)
+	now := time.Now()
+	m.lastPasteAt = now
+	m.markPasteConfirmPending(now)
+	m.statusNote = fmt.Sprintf("Long pasted text (%d lines) compressed as %s. Use [Paste #%s], [Paste #%s line10], or [Paste #%s line10~line20].",
+		content.Lines, marker, content.ID, content.ID, content.ID)
+	m.syncInputOverlays()
+	m.clearHiddenPasteProbe()
+	return true
+}
+
+func (m *model) handleHiddenPasteProbeKey(msg tea.KeyMsg) (bool, tea.Cmd) {
+	if m == nil || !m.hiddenPasteProbe.active {
+		return false, nil
+	}
+	fragment, ok := pasteEchoFragmentFromKey(msg)
+	if !ok {
+		m.flushHiddenPasteProbeToInput()
+		return false, nil
+	}
+	fragment = normalizeNewlines(strings.ReplaceAll(fragment, ctrlVMarkerRune, ""))
+	if strings.TrimSpace(fragment) == "" {
+		m.flushHiddenPasteProbeToInput()
+		return false, nil
+	}
+	probe := m.hiddenPasteProbe
+	candidate := probe.buffered + fragment
+	clipboard := normalizeNewlines(probe.clipboard)
+	if !strings.HasPrefix(clipboard, candidate) {
+		m.flushHiddenPasteProbeToInput()
+		return false, nil
+	}
+	probe.buffered = candidate
+	probe.lastEventAt = time.Now()
+	probe.flushID++
+	m.hiddenPasteProbe = probe
+	if len([]rune(strings.TrimSpace(candidate))) >= 2 || strings.Contains(candidate, "\n") || strings.Contains(candidate, "\t") {
+		return m.commitImplicitClipboardPaste(candidate, probe.clipboard), nil
+	}
+	return true, scheduleHiddenPasteProbeFlush(probe.flushID)
+}
+
+func (m *model) tryStartImplicitClipboardPasteFromKey(msg tea.KeyMsg) tea.Cmd {
+	if m == nil || msg.Paste || m.hasActivePasteSession() || m.hasActivePasteBurst() || m.hiddenPasteProbe.active {
+		return nil
+	}
+	if msg.Type != tea.KeyRunes || len(msg.Runes) == 0 {
+		return nil
+	}
+	if _, hasMarker := extractLeadingCompressedMarker(m.input.Value()); hasMarker {
+		return nil
+	}
+	fragment := normalizeNewlines(strings.ReplaceAll(string(msg.Runes), ctrlVMarkerRune, ""))
+	if strings.TrimSpace(fragment) == "" {
+		return nil
+	}
+	if !shouldProbeImplicitClipboardFragment(m.input.Value(), fragment) {
+		return nil
+	}
+	clipboardText, ok := m.readClipboardTextForPaste()
+	if !ok || !m.isLongPastedText(clipboardText) {
+		return nil
+	}
+	if !strings.HasPrefix(normalizeNewlines(clipboardText), fragment) {
+		return nil
+	}
+	if len(msg.Runes) == 1 {
+		return m.startHiddenPasteProbe(fragment, clipboardText)
+	}
+	if m.commitImplicitClipboardPaste(fragment, clipboardText) {
+		return func() tea.Msg { return nil }
+	}
+	return nil
 }
 
 func (m model) pasteFragmentFromKey(msg tea.KeyMsg) (string, string, bool) {
@@ -728,21 +1230,70 @@ func (m model) pasteFragmentFromKey(msg tea.KeyMsg) (string, string, bool) {
 		switch {
 		case msg.Type == tea.KeyEnter:
 			return "\n", "paste-key", true
+		case msg.Type == tea.KeyTab:
+			return "\t", "paste-key", true
 		case len(msg.Runes) > 0:
 			return string(msg.Runes), "paste-key", true
 		default:
 			return "", "", false
 		}
 	}
-	if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
-		fragment := string(msg.Runes)
-		candidate := strings.ReplaceAll(normalizeNewlines(fragment), ctrlVMarkerRune, "")
-		trimmed := strings.TrimSpace(candidate)
-		if trimmed != "" && (strings.Contains(candidate, "\n") || m.isLongPastedText(candidate)) {
-			return fragment, "rune-burst-paste", true
+	if m.hasActivePasteBurst() {
+		switch {
+		case msg.Type == tea.KeyEnter:
+			return "\n", "paste-burst", true
+		case msg.Type == tea.KeyTab:
+			return "\t", "paste-burst", true
+		case msg.Type == tea.KeyRunes && len(msg.Runes) > 0:
+			return string(msg.Runes), "paste-burst", true
+		default:
+			return "", "", false
 		}
 	}
+	if m.hasActivePasteSession() {
+		switch {
+		case msg.Type == tea.KeyEnter && m.shouldAppendEnterToActivePasteSession():
+			return "\n", "rapid-enter", true
+		case msg.Type == tea.KeyTab:
+			return "\t", "rapid-enter", true
+		case msg.Type == tea.KeyRunes && len(msg.Runes) > 0:
+			return string(msg.Runes), "rune", true
+		default:
+			return "", "", false
+		}
+	}
+	if msg.Type != tea.KeyRunes || len(msg.Runes) == 0 {
+		return "", "", false
+	}
+	fragment := string(msg.Runes)
+	if looksLikeMarkdownPasteFragment(strings.TrimSpace(normalizeNewlines(fragment))) {
+		return fragment, "rune", true
+	}
 	return "", "", false
+}
+
+func (m model) hasImplicitPasteCandidateEvidence() bool {
+	if !m.pasteBurstCandidate.active {
+		trimmed := strings.TrimSpace(m.input.Value())
+		if trimmed == "" {
+			return false
+		}
+		return !m.lastInputAt.IsZero() &&
+			time.Since(m.lastInputAt) <= 250*time.Millisecond &&
+			m.inputBurstSize >= 2 &&
+			looksLikeMarkdownPasteFragment(trimmed)
+	}
+	if m.pasteBurstCandidate.lastEventAt.IsZero() {
+		return false
+	}
+	if time.Since(m.pasteBurstCandidate.lastEventAt) > 250*time.Millisecond {
+		return false
+	}
+	if m.pasteBurstCandidate.eventCount >= 2 {
+		return true
+	}
+	delta := strings.TrimSpace(m.candidateBurstDelta(m.input.Value()))
+	return strings.Contains(delta, "\n") && m.pasteBurstCandidate.charCount >= pasteBurstCharThreshold
 }
 
 func inputMutationSource(msg tea.KeyMsg) string {
@@ -830,47 +1381,23 @@ func (m model) mouseOverLandingInput(y int) bool {
 	if m.height <= 0 {
 		return false
 	}
-	logoHeight := lipgloss.Height(landingLogoStyle.Render(strings.Join([]string{
-		"    ____        __                      _           __",
-		"   / __ )__  __/ /____  ____ ___  ____(_)___  ____/ /",
-		"  / __  / / / / __/ _ \\/ __ `__ \\/ __/ / __ \\/ __  / ",
-		" / /_/ / /_/ / /_/  __/ / / / / / /_/ / / / / /_/ /  ",
-		"/_____/\\__, /\\__/\\___/_/ /_/ /_/\\__/_/_/ /_/\\__,_/   ",
-		"      /____/                                          ",
-	}, "\n")))
-	modeTabsHeight := lipgloss.Height(m.renderModeTabs())
-	overlayHeight := 0
-	if m.startupGuide.Active {
-		overlayHeight = lipgloss.Height(m.renderStartupGuidePanel()) + 1
-	} else if m.promptSearchOpen {
-		overlayHeight = lipgloss.Height(m.renderPromptSearchPalette()) + 1
-	} else if m.mentionOpen {
-		overlayHeight = lipgloss.Height(m.renderMentionPalette()) + 1
-	} else if m.commandOpen {
-		overlayHeight = lipgloss.Height(m.renderCommandPalette()) + 1
-	}
-	inputHeight := lipgloss.Height(
-		landingInputStyle.Copy().
-			BorderForeground(m.modeAccentColor()).
-			Width(m.landingInputShellWidth()).
-			Render(m.input.View()),
-	)
-	hintHeight := lipgloss.Height(renderFooterShortcutHints())
-	contentHeight := logoHeight + 1 + modeTabsHeight + 1 + overlayHeight + inputHeight + 1 + hintHeight
-	contentTop := max(0, (m.height-contentHeight)/2)
-	inputTop := contentTop + logoHeight + 1 + modeTabsHeight + 1 + overlayHeight
+	contentHeight := m.landingContentHeight()
+	contentTop := m.landingContentTop(contentHeight)
+	inputTop := m.landingInputTop(contentTop)
+	inputHeight := lipgloss.Height(m.renderLandingInputBox(false))
 	inputBottom := inputTop + max(1, inputHeight) - 1
 	return y >= inputTop && y <= inputBottom
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	pasteDebugf("handleKey %s %s", summarizePasteMsg(msg), m.pasteDebugState())
 	switch msg.String() {
 	case "ctrl+c":
 		if m.hasCopyableSelection() {
 			return m, m.copyCurrentSelection()
 		}
 		if m.approval != nil {
-			m.approval.Reply <- approvalDecision{Approved: false}
+			m.resolveApprovalDecision(false)
 		}
 		if m.runCancel != nil {
 			m.runCancel()
@@ -880,6 +1407,42 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.promptSearchOpen {
 		return m.handlePromptSearchKey(msg)
+	}
+	if m.planActionOpen {
+		return m.handlePlanActionKey(msg)
+	}
+	if m.consumePasteEchoKey(msg) {
+		return m, nil
+	}
+
+	if handled, cmd := m.handleHiddenPasteProbeKey(msg); handled {
+		return m, cmd
+	}
+
+	if !msg.Paste && m.hasActivePasteSession() {
+		if _, hasMarker := extractLeadingCompressedMarker(m.input.Value()); hasMarker {
+			m.clearPasteSession()
+			m.clearPasteBurstCapture()
+		}
+	}
+
+	if cmd := m.tryStartImplicitClipboardPasteFromKey(msg); cmd != nil {
+		return m, cmd
+	}
+
+	if m.shouldPromoteImplicitPasteCandidate(msg) {
+		return m, m.captureImplicitPasteCandidate(msg)
+	}
+
+	if m.shouldCaptureImplicitPasteSpecialKey(msg) {
+		return m, m.captureImplicitPasteSpecialKey(msg)
+	}
+
+	if fragment, source, ok := m.pasteFragmentFromKey(msg); ok {
+		if source == "paste-key" || source == "paste-burst" || source == "rune-burst-paste" {
+			m.beginOrAppendPasteTransaction(fragment, source)
+		}
+		return m, m.ingestPasteFragment(fragment, source)
 	}
 
 	switch msg.String() {
@@ -891,7 +1454,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case "tab":
-		if m.commandOpen || m.mentionOpen || m.sessionsOpen || m.helpOpen || m.approval != nil {
+		if m.commandOpen || m.mentionOpen || m.sessionsOpen || m.helpOpen || m.approval != nil || m.planActionOpen {
 			break
 		}
 		m.toggleMode()
@@ -901,38 +1464,85 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.helpOpen = !m.helpOpen
 		}
 		return m, nil
-	case "ctrl+a":
-		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.skillsOpen || m.commandOpen || m.mentionOpen || m.promptSearchOpen {
-			return m, nil
-		}
-		if m.busy {
-			m.statusNote = "Cannot toggle away mode while a run is in progress."
-			return m, nil
-		}
-		m.toggleAwayMode()
-		return m, nil
 	case "ctrl+k":
-		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.commandOpen || m.mentionOpen || m.busy {
+		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.commandOpen || m.mentionOpen || m.planActionOpen || m.busy {
 			return m, nil
 		}
 		if err := m.openSkillsPicker(); err != nil {
 			m.statusNote = err.Error()
 		}
 		return m, nil
+	case "ctrl+a":
+		if m.screen == screenLanding {
+			return m, nil
+		}
+		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.skillsOpen || m.commandOpen || m.mentionOpen || m.planActionOpen {
+			return m, nil
+		}
+		m.toggleApprovalMode()
+		return m, nil
+	case "ctrl+e":
+		if m.screen != screenChat {
+			return m, nil
+		}
+		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.skillsOpen || m.commandOpen || m.mentionOpen || m.planActionOpen {
+			return m, nil
+		}
+		if len(m.pastedOrder) == 0 {
+			return m, nil
+		}
+		return m, func() tea.Msg { return togglePasteExpandAllMsg{} }
 	}
 
 	if m.approval != nil {
-		switch msg.String() {
-		case "y", "Y", "enter":
-			m.approval.Reply <- approvalDecision{Approved: true}
-			m.statusNote = "Shell command approved."
-			m.phase = "tool"
-			m.approval = nil
-		case "n", "N", "esc":
-			m.approval.Reply <- approvalDecision{Approved: false}
-			m.statusNote = "Shell command rejected."
-			m.phase = "thinking"
-			m.approval = nil
+		switch m.approval.Kind {
+		case approvalPromptKindEnableFullAccess:
+			switch msg.String() {
+			case "left", "h", "up", "k", "shift+tab", "backtab":
+				m.setApprovalChoice(approvalChoiceApprove)
+			case "right", "l", "down", "j", "tab":
+				m.setApprovalChoice(approvalChoiceReject)
+			case "enter":
+				m.resolveApprovalDecision(m.currentApprovalChoice() == approvalChoiceApprove)
+			case "y", "Y":
+				m.resolveApprovalDecision(true)
+			case "n", "N", "esc":
+				m.resolveApprovalDecision(false)
+			}
+		default:
+			switch msg.String() {
+			case "up", "k":
+				m.approval.Cursor = clamp(m.approval.Cursor-1, 0, len(m.approvalOptions())-1)
+			case "down", "j":
+				m.approval.Cursor = clamp(m.approval.Cursor+1, 0, len(m.approvalOptions())-1)
+			case "y", "Y":
+				m.rememberApprovalDecision(ApprovalRequest{ToolName: m.approval.ToolName, Command: m.approval.Command, Reason: m.approval.Reason}, ApprovalDecision{Disposition: ApprovalApproveOnce})
+				m.approval.Reply <- approvalDecision{Decision: ApprovalDecision{Disposition: ApprovalApproveOnce}}
+				m.statusNote = "Approved current operation."
+				m.phase = "tool"
+				m.approval = nil
+			case "enter":
+				options := m.approvalOptions()
+				selected := options[clamp(m.approval.Cursor, 0, len(options)-1)]
+				decision := ApprovalDecision{Disposition: selected.Decision}
+				m.rememberApprovalDecision(ApprovalRequest{ToolName: m.approval.ToolName, Command: m.approval.Command, Reason: m.approval.Reason}, decision)
+				m.approval.Reply <- approvalDecision{Decision: decision}
+				switch selected.Decision {
+				case ApprovalApproveAllSession:
+					m.statusNote = "Session approvals disabled for this TUI session."
+				case ApprovalApproveSameToolSession:
+					m.statusNote = "Future approvals for this tool will auto-pass in this session."
+				default:
+					m.statusNote = "Approved current operation."
+				}
+				m.phase = "tool"
+				m.approval = nil
+			case "n", "N", "esc":
+				m.approval.Reply <- approvalDecision{Decision: ApprovalDecision{Disposition: ApprovalDeny}}
+				m.statusNote = "Operation rejected."
+				m.phase = "thinking"
+				m.approval = nil
+			}
 		}
 		return m, nil
 	}
@@ -1006,22 +1616,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	if isAltVImagePasteKey(msg) {
-		if note := m.handleEmptyClipboardPaste(); strings.TrimSpace(note) != "" {
-			m.statusNote = note
-		}
+	if msg.Type == tea.KeyEnter && !msg.Paste && !m.shouldSuppressEnterAfterPaste() && m.shouldTreatRapidEnterAsPasteContinuation() {
+		before := m.input.Value()
+		after := before + "\n"
+		m.setInputValue(after)
+		_ = m.handleInputMutation(before, after, "rapid-enter")
 		m.syncInputOverlays()
-		return m, nil
-	}
-
-	if m.consumePasteEchoKey(msg) {
-		return m, nil
-	}
-
-	if fragment, source, ok := m.pasteFragmentFromKey(msg); ok {
-		m.armClipboardPasteCaptureSignal()
-		m.beginOrAppendPasteTransaction(fragment, source)
-		m.applyDirectPasteInput(fragment, source)
 		return m, nil
 	}
 
@@ -1029,7 +1629,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Prefer Ctrl+V image paste first. If clipboard has no image, fall through
 	// so regular terminal paste behavior can continue.
 	if ctrlVPasteDetected {
-		m.armClipboardPasteCaptureSignal()
 		beforeClipboard := m.input.Value()
 		clipboardNote := strings.TrimSpace(m.handleEmptyClipboardPaste())
 		if m.input.Value() != beforeClipboard {
@@ -1039,16 +1638,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.syncInputOverlays()
 			return m, nil
 		}
-		// If clipboard has text, treat Ctrl+V as one explicit paste boundary and
-		// handle insertion ourselves so long text can be summarized immediately.
 		if payload, ok := m.readClipboardTextForPaste(); ok {
 			m.beginPasteTransaction(payload, "ctrl+v")
-			m.applyDirectPasteInput(payload, "ctrl+v")
 			if strings.TrimSpace(m.statusNote) == "" || isClipboardNoImageNote(clipboardNote) {
 				m.statusNote = "Pasted text from clipboard."
 			}
-			m.syncInputOverlays()
-			return m, nil
+			return m, m.ingestPasteFragment(payload, "ctrl+v")
 		}
 		if clipboardNote != "" {
 			m.clearPasteTransaction()
@@ -1067,13 +1662,20 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, m.loadSessionsCmd()
+	case "alt+v":
+		if note := m.handleEmptyClipboardPaste(); strings.TrimSpace(note) != "" {
+			m.statusNote = note
+		}
+		m.syncInputOverlays()
+		return m, nil
 	case "ctrl+n":
+		previousScreen := m.screen
 		if !m.busy && m.screen == screenChat {
 			if err := m.newSession(); err != nil {
 				m.statusNote = err.Error()
 			}
 		}
-		return m, m.loadSessionsCmd()
+		return m, tea.Batch(m.loadSessionsCmd(), m.startLandingGlowOnTransition(previousScreen))
 	case "home":
 		m.viewport.GotoTop()
 		m.syncCopyViewOffset()
@@ -1087,27 +1689,62 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.String() == "enter" && !msg.Paste {
-		rawValue := m.input.Value()
-		if m.shouldTreatEnterAsClipboardPasteContinuation(rawValue) {
-			m.applyDirectPasteInput("\n", "clipboard-paste-continuation")
-			m.syncInputOverlays()
+		if m.hasActivePasteSession() {
+			m.finalizePasteSession(m.pasteSession.finalizeID)
 			return m, nil
 		}
-		if replacement, note, ok := m.tryCompressClipboardMatchedPaste(rawValue); ok {
-			m.setInputValue(replacement)
-			m.syncInputOverlays()
-			if strings.TrimSpace(note) != "" {
-				m.statusNote = note
+		rawValue := m.input.Value()
+		if next, handled := m.handleSuppressedPasteEnter(rawValue); handled {
+			return next, nil
+		}
+		if markerChain, ok := extractLeadingCompressedMarker(rawValue); ok {
+			tail := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rawValue), markerChain))
+			if tail != "" {
+				if m.hasCompressedMarkerTailPasteEvidence("paste-enter") && m.shouldCompressPastedText(tail, "paste-enter") {
+					marker, content, err := m.compressPastedText(tail)
+					if err != nil {
+						m.statusNote = err.Error()
+						return m, nil
+					}
+					combined := strings.TrimSpace(markerChain) + marker
+					m.setInputValue(combined)
+					m.markPasteConfirmPending(time.Now())
+					m.syncInputOverlays()
+					m.statusNote = fmt.Sprintf("Detected another pasted block and compressed it as %s (%d lines). Press Enter again to send.", marker, content.Lines)
+					return m, nil
+				}
+				if m.hasCompressedMarkerTailPasteEvidence("paste-enter") && (len(tail) >= 24 || strings.Contains(tail, "\n")) {
+					m.setInputValue(strings.TrimSpace(markerChain))
+					m.syncInputOverlays()
+					m.statusNote = "Detected continued paste chunk after compressed marker. Kept compressed markers only; press Enter again to send."
+					return m, nil
+				}
 			}
+		}
+		// Check whether the input has already been compressed.
+		isAlreadyCompressed := strings.Contains(rawValue, "[Paste #") || strings.Contains(rawValue, "[Pasted #")
+
+		// Compress long pasted content before sending.
+		if !isAlreadyCompressed && m.shouldCompressPastedText(rawValue, inputMutationSource(msg)) {
+			marker, content, err := m.compressPastedText(rawValue)
+			if err != nil {
+				m.statusNote = err.Error()
+				return m, nil
+			}
+			m.setInputValue(marker)
+			m.markPasteConfirmPending(time.Now())
+			m.syncInputOverlays()
+			m.statusNote = fmt.Sprintf("Long pasted text (%d lines) compressed as %s. Press Enter again to send. Use [Paste #%s] or [Paste #%s line10~line20] later.", content.Lines, marker, content.ID, content.ID)
 			return m, nil
 		}
 		value := strings.TrimSpace(rawValue)
 		if m.startupGuide.Active && !strings.HasPrefix(value, "/") {
+			previousScreen := m.screen
 			if err := m.handleStartupGuideSubmission(rawValue); err != nil {
 				m.statusNote = err.Error()
 			}
 			m.screen = screenLanding
-			return m, nil
+			return m, m.startLandingGlowOnTransition(previousScreen)
 		}
 		if value == "" {
 			return m, nil
@@ -1128,35 +1765,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.busy {
 			if strings.HasPrefix(value, "/") {
-				m.statusNote = "This command is unavailable while a run is in progress. Use /btw <message>."
+				m.statusNote = "This command is unavailable while a run is in progress. Use /btw <message> or plain text."
 				return m, nil
 			}
-			m.statusNote = "Run is in progress. Use /btw <message> to interject, or Esc to interrupt."
-			return m, nil
+			return m.submitBTW(value)
 		}
-		if isContinueExecutionInput(value) && planpkg.HasStructuredPlan(m.plan) {
-			state, err := preparePlanForContinuation(m.plan)
-			if err != nil {
-				m.statusNote = err.Error()
-				return m, nil
-			}
-			m.plan = state
-			m.mode = modeBuild
-			if m.sess != nil {
-				m.sess.Mode = planpkg.ModeBuild
-				m.sess.Plan = copyPlanState(state)
-				if m.store != nil {
-					if err := m.store.Save(m.sess); err != nil {
-						m.statusNote = err.Error()
-						return m, nil
-					}
-				}
-			}
+		if action, ok := resolvePlanActionSelection(value, m.plan, m.sess); ok {
+			return m.submitPlanActionSelectionWithDisplay(action, strings.TrimSpace(value))
 		}
 		if strings.HasPrefix(value, "/") {
 			m.input.Reset()
-			m.clearPasteTransaction()
-			m.clearVirtualPasteParts()
+			m.clearPasteConfirmPending()
+			m.clearPasteBurstCapture()
 			next, cmd, err := m.executeCommand(value)
 			if err != nil {
 				m.statusNote = err.Error()
@@ -1213,6 +1833,187 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m model) shouldSuppressEnterAfterPaste() bool {
+	if m.pasteConfirmPending {
+		return true
+	}
+	if !m.pasteSubmitGuardUntil.IsZero() && time.Now().Before(m.pasteSubmitGuardUntil) {
+		return true
+	}
+	if m.hasImplicitPasteBurst() {
+		return true
+	}
+	if m.lastPasteAt.IsZero() {
+		return false
+	}
+	if time.Since(m.lastPasteAt) > pasteSubmitGuard {
+		return false
+	}
+	if strings.Contains(m.input.Value(), "[Paste #") || strings.Contains(m.input.Value(), "[Pasted #") {
+		return true
+	}
+	if strings.Contains(m.input.Value(), "\n") {
+		return true
+	}
+	return time.Since(m.lastInputAt) <= 120*time.Millisecond
+}
+
+func (m model) hasImplicitPasteBurst() bool {
+	if m.pasteConfirmPending {
+		return true
+	}
+	if m.lastInputAt.IsZero() {
+		return false
+	}
+	if time.Since(m.lastInputAt) > 250*time.Millisecond {
+		return false
+	}
+	if !m.hasImplicitPasteCandidateEvidence() {
+		return false
+	}
+	trimmed := strings.TrimSpace(m.input.Value())
+	if trimmed == "" {
+		return false
+	}
+	if strings.Contains(trimmed, "[Paste #") || strings.Contains(trimmed, "[Pasted #") {
+		return true
+	}
+	if strings.Contains(trimmed, "\n") {
+		return true
+	}
+	if m.busy && m.inputBurstSize >= pasteBurstImmediateMinChars {
+		return looksLikePastedFragment(trimmed)
+	}
+	if m.inputBurstSize < pasteBurstCharThreshold {
+		return false
+	}
+	return looksLikePastedFragment(trimmed)
+}
+
+func (m model) shouldTreatRapidEnterAsPasteContinuation() bool {
+	if m.lastInputAt.IsZero() {
+		return false
+	}
+	if time.Since(m.lastInputAt) > 400*time.Millisecond {
+		return false
+	}
+	trimmed := strings.TrimSpace(m.input.Value())
+	if trimmed == "" {
+		return false
+	}
+	if strings.Contains(trimmed, "[Paste #") || strings.Contains(trimmed, "[Pasted #") {
+		return false
+	}
+	if !m.hasImplicitPasteCandidateEvidence() {
+		return false
+	}
+	if m.inputBurstSize >= 2 && looksLikeMarkdownPasteFragment(trimmed) {
+		return true
+	}
+	return m.inputBurstSize >= pasteBurstImmediateMinChars
+}
+
+func (m model) shouldAppendEnterToActivePasteSession() bool {
+	if !m.hasActivePasteSession() {
+		return false
+	}
+	if m.pasteSession.lastEventAt.IsZero() {
+		return false
+	}
+	return time.Since(m.pasteSession.lastEventAt) <= 400*time.Millisecond
+}
+
+func looksLikeMarkdownPasteFragment(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(value, "#"),
+		strings.HasPrefix(value, ">"),
+		strings.HasPrefix(value, "- "),
+		strings.HasPrefix(value, "* "),
+		strings.HasPrefix(value, "```"):
+		return true
+	}
+	if len(value) >= 3 && value[0] >= '0' && value[0] <= '9' {
+		if dot := strings.Index(value, ". "); dot > 0 && dot <= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func (m model) handleSuppressedPasteEnter(rawValue string) (tea.Model, bool) {
+	if !m.shouldSuppressEnterAfterPaste() {
+		return m, false
+	}
+	rawValue = strings.TrimSpace(rawValue)
+	if rawValue == "" {
+		m.clearPasteConfirmPending()
+		return m, true
+	}
+	if markerChain, ok := extractLeadingCompressedMarker(rawValue); ok {
+		tail := strings.TrimSpace(strings.TrimPrefix(rawValue, markerChain))
+		if tail != "" {
+			if m.hasCompressedMarkerTailPasteEvidence("paste-enter") &&
+				(m.shouldCompressPastedText(tail, "paste-enter") || m.isLongPastedText(tail)) {
+				marker, content, err := m.compressPastedText(tail)
+				if err != nil {
+					m.statusNote = err.Error()
+					return m, true
+				}
+				combined := strings.TrimSpace(markerChain) + marker
+				m.setInputValue(combined)
+				m.markPasteConfirmPending(time.Now())
+				m.syncInputOverlays()
+				m.statusNote = fmt.Sprintf("Detected another pasted block and compressed it as %s (%d lines). Press Enter again to send.", marker, content.Lines)
+				return m, true
+			}
+			if m.hasCompressedMarkerTailPasteEvidence("paste-enter") && (len(tail) >= 24 || strings.Contains(tail, "\n")) {
+				m.setInputValue(strings.TrimSpace(markerChain))
+				m.syncInputOverlays()
+				m.statusNote = "Detected continued paste chunk after compressed marker. Kept compressed markers only; press Enter again to send."
+				return m, true
+			}
+		}
+		if m.pasteConfirmPending {
+			m.releasePasteSubmitSuppression()
+			m.statusNote = "Paste compressed. Press Enter again to send."
+		}
+		return m, true
+	}
+	if m.shouldCompressPastedText(rawValue, "paste-enter") || (m.hasImplicitPasteBurst() && m.isLongPastedText(rawValue)) {
+		marker, content, err := m.compressPastedText(rawValue)
+		if err != nil {
+			m.statusNote = err.Error()
+			return m, true
+		}
+		m.setInputValue(marker)
+		m.markPasteConfirmPending(time.Now())
+		m.syncInputOverlays()
+		m.statusNote = fmt.Sprintf("Long pasted text (%d lines) compressed as %s. Press Enter again to send. Use [Paste #%s] or [Paste #%s line10~line20] later.", content.Lines, marker, content.ID, content.ID)
+		return m, true
+	}
+	if m.pasteConfirmPending {
+		m.releasePasteSubmitSuppression()
+		m.statusNote = "Paste captured. Press Enter again to send."
+		return m, true
+	}
+	m.clearPasteConfirmPending()
+	return m, true
+}
+
+func (m *model) armPasteSubmitGuard(now time.Time) {
+	if m == nil {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	m.pasteSubmitGuardUntil = now.Add(pasteSubmitGuard)
+}
+
 func extractBracketedPastePayload(msg tea.Msg) (string, bool) {
 	if msg == nil {
 		return "", false
@@ -1258,7 +2059,7 @@ func rebuildSessionTimeline(sess *session.Session) ([]chatEntry, []toolRun) {
 				summary, lines, status := summarizeTool(name, part.ToolResult.Content)
 				items = append(items, chatEntry{
 					Kind:   "tool",
-					Title:  "Tool Call | " + name,
+					Title:  toolEntryTitle(name),
 					Body:   joinSummary(summary, lines),
 					Status: status,
 				})
@@ -1283,7 +2084,7 @@ func rebuildSessionTimeline(sess *session.Session) ([]chatEntry, []toolRun) {
 			summary, lines, status := summarizeTool(name, message.Content)
 			items = append(items, chatEntry{
 				Kind:   "tool",
-				Title:  "Tool Call | " + name,
+				Title:  toolEntryTitle(name),
 				Body:   joinSummary(summary, lines),
 				Status: status,
 			})
@@ -1300,13 +2101,107 @@ func chatBubbleWidth(item chatEntry, width int) int {
 	return width
 }
 
+func toolEntryTitle(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "tool"
+	}
+	return toolDisplayLabel(name) + " | " + name
+}
+
+func toolDisplayParts(title string) (string, string) {
+	title = strings.TrimSpace(title)
+	switch {
+	case strings.HasPrefix(strings.ToLower(title), "tool call | "):
+		name := strings.TrimSpace(title[len("Tool Call | "):])
+		if name == "" {
+			name = "tool"
+		}
+		return toolDisplayLabel(name), name
+	case strings.HasPrefix(strings.ToLower(title), "tool result | "):
+		name := strings.TrimSpace(title[len("Tool Result | "):])
+		if name == "" {
+			name = "tool"
+		}
+		return toolDisplayLabel(name), name
+	}
+	if idx := strings.Index(title, "|"); idx >= 0 {
+		label := strings.TrimSpace(title[:idx])
+		name := strings.TrimSpace(title[idx+1:])
+		if label != "" && name != "" {
+			return label, name
+		}
+	}
+	if title == "" {
+		return "TOOL", "tool"
+	}
+	return toolDisplayLabel(title), title
+}
+
+func toolDisplayLabel(name string) string {
+	switch strings.TrimSpace(strings.ToLower(name)) {
+	case "list_files":
+		return "LIST"
+	case "read_file":
+		return "READ"
+	case "search_text", "web_search":
+		return "SEARCH"
+	case "web_fetch":
+		return "FETCH"
+	case "run_shell":
+		return "SHELL"
+	case "write_file":
+		return "WRITE"
+	case "replace_in_file":
+		return "EDIT"
+	case "apply_patch":
+		return "PATCH"
+	case "update_plan":
+		return "PLAN"
+	default:
+		return "TOOL"
+	}
+}
+
+func compactDisplayPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	volume := filepath.VolumeName(path)
+	trimmed := strings.TrimPrefix(path, volume)
+	parts := strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == '/' || r == '\\'
+	})
+	if len(parts) <= 3 {
+		return path
+	}
+	sep := "/"
+	if strings.Contains(path, "\\") && !strings.Contains(path, "/") {
+		sep = "\\"
+	}
+	prefix := ""
+	if volume != "" {
+		prefix = volume + sep
+	}
+	return prefix + parts[0] + sep + "..." + sep + strings.Join(parts[len(parts)-2:], sep)
+}
+
+func compactToolText(text string, limit int) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
+	if text == "" {
+		return ""
+	}
+	return compact(text, limit)
+}
+
 func summarizeTool(name, payload string) (string, []string, string) {
 	var envelope struct {
 		OK    *bool  `json:"ok"`
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(payload), &envelope); err == nil && envelope.Error != "" {
-		return envelope.Error, nil, "error"
+		return compactToolText(envelope.Error, 88), nil, "error"
 	}
 
 	switch name {
@@ -1319,11 +2214,16 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			} `json:"items"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			lines := make([]string, 0, min(3, len(result.Items)))
-			for i := 0; i < min(3, len(result.Items)); i++ {
-				lines = append(lines, result.Items[i].Type+" "+result.Items[i].Path)
+			dirs := 0
+			files := 0
+			for _, item := range result.Items {
+				if item.Type == "dir" {
+					dirs++
+				} else {
+					files++
+				}
 			}
-			return fmt.Sprintf("Listed %d items under %s", len(result.Items), emptyDot(result.Root)), lines, "done"
+			return fmt.Sprintf("Read %d files, listed %d directories", files, dirs), []string{}, "done"
 		}
 	case "read_file":
 		var result struct {
@@ -1332,7 +2232,12 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			EndLine   int    `json:"end_line"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			return fmt.Sprintf("Read %s lines %d-%d", result.Path, result.StartLine, result.EndLine), nil, "done"
+			path := compactDisplayPath(result.Path)
+			summary := "Read " + filepath.Base(result.Path)
+			return summary, []string{
+				fmt.Sprintf("range: %d-%d", result.StartLine, result.EndLine),
+				"path: " + path,
+			}, "done"
 		}
 	case "search_text":
 		var result struct {
@@ -1344,12 +2249,7 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			} `json:"matches"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			lines := make([]string, 0, min(3, len(result.Matches)))
-			for i := 0; i < min(3, len(result.Matches)); i++ {
-				match := result.Matches[i]
-				lines = append(lines, fmt.Sprintf("%s:%d %s", match.Path, match.Line, compact(match.Text, 72)))
-			}
-			return fmt.Sprintf("Found %d match(es) for %q", len(result.Matches), result.Query), lines, "done"
+			return fmt.Sprintf("%d matches for %q", len(result.Matches), result.Query), []string{}, "done"
 		}
 	case "web_search":
 		var result struct {
@@ -1360,16 +2260,16 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			} `json:"results"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			lines := make([]string, 0, min(3, len(result.Results)))
+			lines := []string{fmt.Sprintf("results: %d", len(result.Results))}
 			for i := 0; i < min(3, len(result.Results)); i++ {
 				item := result.Results[i]
-				title := compact(item.Title, 56)
+				title := compact(item.Title, 52)
 				if strings.TrimSpace(title) == "" {
-					title = item.URL
+					title = compact(item.URL, 52)
 				}
-				lines = append(lines, title+" - "+item.URL)
+				lines = append(lines, title+" - "+compact(item.URL, 52))
 			}
-			return fmt.Sprintf("Searched web for %q (%d result(s))", result.Query, len(result.Results)), lines, "done"
+			return fmt.Sprintf("Web search for %q", result.Query), lines, "done"
 		}
 	case "web_fetch":
 		var result struct {
@@ -1380,17 +2280,17 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			Truncated  bool   `json:"truncated"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			lines := make([]string, 0, 2)
+			lines := []string{fmt.Sprintf("status: HTTP %d", result.StatusCode)}
 			if strings.TrimSpace(result.Title) != "" {
-				lines = append(lines, "title: "+compact(result.Title, 72))
+				lines = append(lines, "title: "+compact(result.Title, 64))
 			}
 			if strings.TrimSpace(result.Content) != "" {
-				lines = append(lines, "preview: "+compact(result.Content, 72))
+				lines = append(lines, "preview: "+compactToolText(result.Content, 64))
 			}
 			if result.Truncated {
-				lines = append(lines, "content truncated")
+				lines = append(lines, "content: truncated")
 			}
-			return fmt.Sprintf("Fetched %s (HTTP %d)", result.URL, result.StatusCode), lines, "done"
+			return "Fetched " + compact(result.URL, 56), lines, "done"
 		}
 	case "write_file":
 		var result struct {
@@ -1398,7 +2298,9 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			BytesWritten int    `json:"bytes_written"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			return fmt.Sprintf("Wrote %s (%d bytes)", result.Path, result.BytesWritten), nil, "done"
+			return "创建 " + filepath.Base(result.Path), []string{
+				fmt.Sprintf("写入 %d 字节", result.BytesWritten),
+			}, "done"
 		}
 	case "replace_in_file":
 		var result struct {
@@ -1407,7 +2309,9 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			OldCount int    `json:"old_count"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			return fmt.Sprintf("Updated %s (%d/%d)", result.Path, result.Replaced, result.OldCount), nil, "done"
+			return "改动 " + filepath.Base(result.Path), []string{
+				fmt.Sprintf("改动 %d 行", result.Replaced),
+			}, "done"
 		}
 	case "apply_patch":
 		var result struct {
@@ -1417,11 +2321,15 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			} `json:"operations"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			lines := make([]string, 0, min(4, len(result.Operations)))
-			for i := 0; i < min(4, len(result.Operations)); i++ {
-				lines = append(lines, result.Operations[i].Type+" "+result.Operations[i].Path)
+			// 只显示前10个操作，后面用省略号表示
+			operationLines := make([]string, 0, min(10, len(result.Operations)))
+			for i := 0; i < min(10, len(result.Operations)); i++ {
+				operationLines = append(operationLines, result.Operations[i].Type+" "+compactDisplayPath(result.Operations[i].Path))
 			}
-			return fmt.Sprintf("Patched %d file operation(s)", len(result.Operations)), lines, "done"
+			if len(result.Operations) > 10 {
+				operationLines = append(operationLines, "...")
+			}
+			return fmt.Sprintf("改动 %d 个文件", len(result.Operations)), operationLines, "done"
 		}
 	case "update_plan":
 		var result struct {
@@ -1445,10 +2353,10 @@ func summarizeTool(name, payload string) (string, []string, string) {
 		if json.Unmarshal([]byte(payload), &result) == nil {
 			lines := make([]string, 0, 2)
 			if text := strings.TrimSpace(result.Stdout); text != "" {
-				lines = append(lines, "stdout: "+compact(strings.Split(text, "\n")[0], 72))
+				lines = append(lines, "stdout: "+compact(strings.Split(text, "\n")[0], 64))
 			}
 			if text := strings.TrimSpace(result.Stderr); text != "" {
-				lines = append(lines, "stderr: "+compact(strings.Split(text, "\n")[0], 72))
+				lines = append(lines, "stderr: "+compact(strings.Split(text, "\n")[0], 64))
 			}
 			status := "done"
 			if !result.OK {
@@ -1466,6 +2374,17 @@ func joinSummary(summary string, lines []string) string {
 		return summary
 	}
 	return summary + "\n" + strings.Join(lines, "\n")
+}
+
+func truncateContent(content string, maxLines int) []string {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	if len(lines) <= maxLines {
+		return lines
+	}
+	truncated := make([]string, maxLines+1)
+	copy(truncated, lines[:maxLines])
+	truncated[maxLines] = "..."
+	return truncated
 }
 
 func summarizeArgs(raw string) string {
@@ -1639,7 +2558,7 @@ func shouldExecuteFromPalette(item commandItem) bool {
 		return true
 	}
 	switch item.Name {
-	case "/help", "/session", "/skills", "/skill clear", "/new", "/compact", "/quit":
+	case "/help", "/session", "/skills", "/skill clear", "/mcp list", "/mcp help", "/new", "/compact", "/quit":
 		return true
 	default:
 		return false
@@ -1668,16 +2587,7 @@ func parsePlanSteps(raw string) []string {
 }
 
 func canContinuePlan(state planpkg.State) bool {
-	state = planpkg.NormalizeState(state)
-	if !planpkg.HasStructuredPlan(state) {
-		return false
-	}
-	switch planpkg.NormalizePhase(string(state.Phase)) {
-	case planpkg.PhaseBlocked, planpkg.PhaseCompleted:
-		return false
-	default:
-		return true
-	}
+	return planpkg.CanStartExecution(state)
 }
 
 func currentOrNextStepTitle(state planpkg.State) string {
@@ -1773,36 +2683,186 @@ func classifyRunFinish(err error, restartedByBTW bool) runFinishReason {
 	return runFinishReasonFailed
 }
 
-func (m model) latestPendingApprovalStatusNote() (string, bool) {
-	for i := len(m.toolRuns) - 1; i >= 0; i-- {
-		if strings.TrimSpace(strings.ToLower(m.toolRuns[i].Status)) != "pending_approval" {
-			continue
-		}
-		summary := strings.TrimSpace(m.toolRuns[i].Summary)
-		if summary == "" {
-			summary = "Pending approval required."
-		}
-		return summary, true
-	}
-	return "", false
-}
-
 func isContinueExecutionInput(input string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(input))
 	switch normalized {
 	case "continue",
 		"continue execution",
 		"continue plan",
+		"start execution",
+		"start build",
+		"begin execution",
+		"execute plan",
 		"resume",
 		"resume execution",
 		"\u7ee7\u7eed",
 		"\u7ee7\u7eed\u6267\u884c",
 		"\u7ee7\u7eed\u505a",
-		"\u7ee7\u7eed\u4efb\u52a1":
+		"\u7ee7\u7eed\u4efb\u52a1",
+		"\u5f00\u59cb\u6267\u884c",
+		"\u5f00\u59cb\u505a",
+		"\u6309\u8ba1\u5212\u6267\u884c":
 		return true
 	default:
 		return false
 	}
+}
+
+func resolvePlanActionSelection(input string, state planpkg.State, sess *session.Session) (string, bool) {
+	state = planpkg.NormalizeState(state)
+	if !planpkg.HasStructuredPlan(state) {
+		return "", false
+	}
+	if action, ok := resolveActiveChoiceSelection(input, state); ok {
+		return action, true
+	}
+	if isContinueExecutionInput(input) {
+		return planActionStartExecution, true
+	}
+	if action, ok := resolveConvergedPlanActionSelection(input, state); ok {
+		return action, true
+	}
+	if !planpkg.CanStartExecution(state) || !latestAssistantHasPlanActionChoices(sess) {
+		return "", false
+	}
+
+	switch normalizePlanActionInput(input) {
+	case "1", "1.", "a", "a.", "option 1", "option a":
+		return planActionStartExecution, true
+	case "2", "2.", "b", "b.", "adjust", "adjust plan", "option 2", "option b",
+		"\u8c03\u6574", "\u8c03\u6574\u8ba1\u5212":
+		return planActionAdjustPlan, true
+	default:
+		return "", false
+	}
+}
+
+func normalizePlanActionInput(input string) string {
+	return strings.ToLower(strings.TrimSpace(input))
+}
+
+func resolveConvergedPlanActionSelection(input string, state planpkg.State) (string, bool) {
+	if !planpkg.CanStartExecution(state) {
+		return "", false
+	}
+	for _, action := range []string{planActionStartExecution, planActionAdjustPlan} {
+		item, ok := syntheticPlanActionItemForAction(state, action)
+		if !ok {
+			continue
+		}
+		if planActionItemMatchesInput(input, item) {
+			return action, true
+		}
+	}
+	return "", false
+}
+
+func planActionItemMatchesInput(input string, item planActionItem) bool {
+	normalized := normalizePlanActionChoiceText(input)
+	if normalized == "" {
+		return false
+	}
+	title := normalizePlanActionChoiceText(item.TitleText)
+	return title != "" && normalized == title
+}
+
+func normalizePlanActionChoiceText(input string) string {
+	normalized := normalizePlanActionInput(input)
+	if normalized == "" {
+		return ""
+	}
+	normalized = strings.TrimSpace(strings.TrimLeft(normalized, "-*"))
+	for _, prefix := range []string{
+		"1.", "2.", "3.", "4.",
+		"1)", "2)", "3)", "4)",
+		"1:", "2:", "3:", "4:",
+		"a.", "b.", "c.", "d.",
+		"a)", "b)", "c)", "d)",
+		"a:", "b:", "c:", "d:",
+	} {
+		if !strings.HasPrefix(normalized, prefix) {
+			continue
+		}
+		trimmed := strings.TrimSpace(strings.TrimPrefix(normalized, prefix))
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	for _, prefix := range []string{
+		"option 1", "option 2", "option 3", "option 4",
+		"option a", "option b", "option c", "option d",
+	} {
+		if !strings.HasPrefix(normalized, prefix) {
+			continue
+		}
+		trimmed := strings.TrimSpace(strings.TrimPrefix(normalized, prefix))
+		trimmed = strings.TrimSpace(strings.TrimLeft(trimmed, ".):"))
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return normalized
+}
+
+func resolveActiveChoiceSelection(input string, state planpkg.State) (string, bool) {
+	state = planpkg.NormalizeState(state)
+	if state.ActiveChoice == nil || len(state.ActiveChoice.Options) == 0 {
+		return "", false
+	}
+	normalized := normalizePlanActionInput(input)
+	normalizedChoice := normalizePlanActionChoiceText(input)
+	if normalized == "" {
+		return "", false
+	}
+	for index, option := range state.ActiveChoice.Options {
+		number := fmt.Sprintf("%d", index+1)
+		shortcut := strings.ToLower(strings.TrimSpace(option.Shortcut))
+		title := normalizePlanActionInput(option.Title)
+		titleChoice := normalizePlanActionChoiceText(option.Title)
+		switch normalized {
+		case number, number + ".", shortcut, shortcut + ".", "option " + number, "option " + shortcut:
+			return formatActiveChoiceAction(state.ActiveChoice.ID, option.ID), true
+		case "other", "other:", "其他", "自定义":
+			if option.Freeform {
+				return formatActiveChoiceAction(state.ActiveChoice.ID, option.ID), true
+			}
+		}
+		if title != "" && (normalized == title || normalizedChoice == titleChoice) {
+			return formatActiveChoiceAction(state.ActiveChoice.ID, option.ID), true
+		}
+	}
+	return "", false
+}
+
+func latestAssistantHasPlanActionChoices(sess *session.Session) bool {
+	return hasPlanActionChoices(latestAssistantMessageText(sess))
+}
+
+func latestAssistantMessageText(sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+	for i := len(sess.Messages) - 1; i >= 0; i-- {
+		msg := sess.Messages[i]
+		if msg.Role != llm.RoleAssistant {
+			continue
+		}
+		text := strings.TrimSpace(msg.Text())
+		if text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func hasPlanActionChoices(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" {
+		return false
+	}
+	hasStart := strings.Contains(normalized, "start execution")
+	hasAdjust := strings.Contains(normalized, "adjust plan")
+	return hasStart && hasAdjust
 }
 
 func (m model) currentPhaseLabel() string {
@@ -1831,46 +2891,13 @@ func (m model) autoFollowLabel() string {
 
 func (m model) currentModelLabel() string {
 	if model := strings.TrimSpace(m.cfg.Provider.Model); model != "" {
+		lower := strings.ToLower(model)
+		if strings.HasSuffix(lower, " (bytemind)") {
+			return strings.TrimSpace(strings.TrimSuffix(lower, " (bytemind)"))
+		}
 		return model
 	}
 	return "-"
-}
-
-func normalizeApprovalMode(mode string) string {
-	if strings.EqualFold(strings.TrimSpace(mode), "away") {
-		return "away"
-	}
-	return "interactive"
-}
-
-func (m model) awayEnabled() bool {
-	return normalizeApprovalMode(m.cfg.ApprovalMode) == "away"
-}
-
-func (m model) awayStatusLabel() string {
-	if m.awayEnabled() {
-		return "Away:ON"
-	}
-	return "Away:OFF"
-}
-
-func (m *model) toggleAwayMode() {
-	if m == nil {
-		return
-	}
-	nextMode := "away"
-	if m.awayEnabled() {
-		nextMode = "interactive"
-	}
-	m.cfg.ApprovalMode = nextMode
-	if updater, ok := m.runner.(approvalModeUpdater); ok && updater != nil {
-		updater.UpdateApprovalMode(nextMode)
-	}
-	if nextMode == "away" {
-		m.statusNote = "Away mode enabled."
-		return
-	}
-	m.statusNote = "Away mode disabled."
 }
 
 func (m model) currentSkillLabel() string {
@@ -1882,6 +2909,111 @@ func (m model) currentSkillLabel() string {
 		return "none"
 	}
 	return name
+}
+
+func (m model) fullAccessEnabled() bool {
+	mode := strings.TrimSpace(m.cfg.ApprovalMode)
+	return strings.EqualFold(mode, "full_access") || strings.EqualFold(mode, "away")
+}
+
+func (m model) approvalModeStatusLabel() string {
+	if m.fullAccessEnabled() {
+		return "! Full Access"
+	}
+	return "Access:Default"
+}
+
+func defaultApprovalChoice(kind string) int {
+	return approvalChoiceApprove
+}
+
+func normalizeApprovalChoice(choice int, kind string) int {
+	if choice == approvalChoiceApprove || choice == approvalChoiceReject {
+		return choice
+	}
+	return defaultApprovalChoice(kind)
+}
+
+func (m model) currentApprovalChoice() int {
+	if m.approval == nil {
+		return approvalChoiceApprove
+	}
+	return normalizeApprovalChoice(m.approval.Choice, m.approval.Kind)
+}
+
+func (m *model) setApprovalChoice(choice int) {
+	if m == nil || m.approval == nil {
+		return
+	}
+	m.approval.Choice = normalizeApprovalChoice(choice, m.approval.Kind)
+}
+
+func (m *model) resolveApprovalDecision(approved bool) {
+	if m == nil || m.approval == nil {
+		return
+	}
+	current := m.approval
+	decision := ApprovalDecision{Disposition: ApprovalDeny}
+	if approved {
+		decision = ApprovalDecision{Disposition: ApprovalApproveOnce}
+	}
+	if current.Reply != nil {
+		current.Reply <- approvalDecision{Decision: decision}
+	}
+	switch current.Kind {
+	case approvalPromptKindEnableFullAccess:
+		if approved {
+			m.setApprovalMode("full_access")
+			m.statusNote = "Warning: Full access enabled. Approval prompts are auto-approved."
+		} else {
+			m.statusNote = "Full access request canceled."
+		}
+		m.phase = "idle"
+	case approvalPromptKindTool, "":
+		if approved {
+			m.statusNote = "Shell command approved."
+			m.phase = "tool"
+		} else {
+			m.statusNote = "Shell command rejected."
+			m.phase = "thinking"
+		}
+	default:
+		if approved {
+			m.statusNote = "Approved."
+		} else {
+			m.statusNote = "Rejected."
+		}
+	}
+	m.approval = nil
+}
+
+func (m *model) setApprovalMode(mode string) {
+	if m == nil {
+		return
+	}
+	m.cfg.ApprovalMode = mode
+	if updater, ok := m.runner.(approvalModeUpdater); ok && updater != nil {
+		updater.UpdateApprovalMode(mode)
+	}
+}
+
+func (m *model) toggleApprovalMode() {
+	if m == nil {
+		return
+	}
+	if m.fullAccessEnabled() {
+		m.setApprovalMode("interactive")
+		m.statusNote = "Default approval mode enabled."
+		return
+	}
+	m.approval = &approvalPrompt{
+		Command: "approval_mode=full_access",
+		Reason:  "Enable full access? Approval prompts will be auto-approved and no longer interrupt tasks.",
+		Kind:    approvalPromptKindEnableFullAccess,
+		Choice:  approvalChoiceApprove,
+	}
+	m.statusNote = "Approval required."
+	m.phase = "approval"
 }
 
 func preparePlanForContinuation(state planpkg.State) (planpkg.State, error) {
@@ -1897,6 +3029,9 @@ func preparePlanForContinuation(state planpkg.State) (planpkg.State, error) {
 		return state, fmt.Errorf("plan is blocked and cannot continue yet")
 	case planpkg.PhaseCompleted:
 		return state, fmt.Errorf("plan is already completed")
+	}
+	if !planpkg.CanStartExecution(state) {
+		return state, fmt.Errorf("plan is not converged yet: define scope, risks/rollback, and verification before starting execution")
 	}
 
 	if _, ok := planpkg.CurrentStep(state); !ok {

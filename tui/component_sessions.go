@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"bytemind/internal/llm"
-	planpkg "bytemind/internal/plan"
-	"bytemind/internal/session"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	planpkg "github.com/1024XEngineer/bytemind/internal/plan"
+	"github.com/1024XEngineer/bytemind/internal/session"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -93,11 +93,12 @@ func (m model) handleSessionsModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.sessions) == 0 {
 			return m, nil
 		}
+		previousScreen := m.screen
 		if err := m.deleteSelectedSession(); err != nil {
 			m.statusNote = err.Error()
 			return m, nil
 		}
-		return m, m.loadSessionsCmd()
+		return m, tea.Batch(m.loadSessionsCmd(), m.startLandingGlowOnTransition(previousScreen))
 	case "enter":
 		if m.busy || len(m.sessions) == 0 {
 			return m, nil
@@ -123,6 +124,7 @@ func (m *model) newSession() error {
 		return err
 	}
 	m.sess = next
+	m.resetSessionApprovalState()
 	m.screen = screenLanding
 	m.plan = planpkg.State{}
 	m.mode = modeBuild
@@ -181,6 +183,7 @@ func (m *model) resumeSession(prefix string) error {
 		return fmt.Errorf("session %s belongs to workspace %s", next.ID, next.Workspace)
 	}
 	m.sess = next
+	m.resetSessionApprovalState()
 	m.screen = screenChat
 	m.plan = copyPlanState(next.Plan)
 	m.mode = toAgentMode(next.Mode)

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"bytemind/internal/config"
+	"github.com/1024XEngineer/bytemind/internal/config"
 )
 
 const (
@@ -111,6 +111,10 @@ func preflightRequest(cfg config.ProviderConfig, apiKey string) (string, map[str
 		return baseURL + "/v1/models", map[string]string{
 			"x-api-key":         apiKey,
 			"anthropic-version": version,
+		}
+	case "gemini":
+		return baseURL + "/models", map[string]string{
+			"x-goog-api-key": apiKey,
 		}
 	default:
 		return baseURL + "/models", map[string]string{

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	corepkg "bytemind/internal/core"
-	"bytemind/internal/llm"
-	runtimepkg "bytemind/internal/runtime"
-	storagepkg "bytemind/internal/storage"
+	corepkg "github.com/1024XEngineer/bytemind/internal/core"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	runtimepkg "github.com/1024XEngineer/bytemind/internal/runtime"
+	storagepkg "github.com/1024XEngineer/bytemind/internal/storage"
 )
 
 func buildToolTraceID(call llm.ToolCall) corepkg.TraceID {
@@ -24,6 +24,7 @@ func (r *Runner) appendTaskStateAudit(
 	sessionID corepkg.SessionID,
 	traceID corepkg.TraceID,
 	toolName string,
+	sandboxAudit sandboxAuditContext,
 	task runtimepkg.Task,
 ) {
 	if task.ID == "" {
@@ -33,6 +34,7 @@ func (r *Runner) appendTaskStateAudit(
 		"tool_name": toolName,
 		"status":    string(task.Status),
 	}
+	appendSandboxAuditContext(metadata, sandboxAudit)
 	if task.ErrorCode != "" {
 		metadata["error_code"] = task.ErrorCode
 	}

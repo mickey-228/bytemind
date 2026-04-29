@@ -9,10 +9,10 @@ import (
 	"strings"
 	"unicode"
 
-	"bytemind/internal/llm"
-	policypkg "bytemind/internal/policy"
-	skillspkg "bytemind/internal/skills"
-	toolspkg "bytemind/internal/tools"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	policypkg "github.com/1024XEngineer/bytemind/internal/policy"
+	skillspkg "github.com/1024XEngineer/bytemind/internal/skills"
+	toolspkg "github.com/1024XEngineer/bytemind/internal/tools"
 )
 
 const (
@@ -76,7 +76,7 @@ func StableToolKey(source ExtensionKind, extensionID, toolName string) (string, 
 	if sourceKey == "" {
 		return "", wrapError(ErrCodeInvalidSource, "extension source is required", nil)
 	}
-	extensionKey := normalizeStableSegment(extensionID)
+	extensionKey := normalizeStableSegment(stableExtensionSegment(source, extensionID))
 	if extensionKey == "" {
 		return "", wrapError(ErrCodeInvalidExtension, "extension id is required", nil)
 	}
@@ -86,6 +86,18 @@ func StableToolKey(source ExtensionKind, extensionID, toolName string) (string, 
 	}
 	stable := strings.Join([]string{sourceKey, extensionKey, toolKey}, stableToolKeySeparator)
 	return enforceStableToolKeyLength(stable), nil
+}
+
+func stableExtensionSegment(source ExtensionKind, extensionID string) string {
+	extensionID = strings.TrimSpace(extensionID)
+	if source != ExtensionMCP {
+		return extensionID
+	}
+	trimmed := strings.TrimPrefix(extensionID, "mcp.")
+	if strings.TrimSpace(trimmed) == "" {
+		return extensionID
+	}
+	return trimmed
 }
 
 func ResolvePolicyToolSets(policy skillspkg.ToolPolicy, bindings []BridgeBinding) (map[string]struct{}, map[string]struct{}, error) {

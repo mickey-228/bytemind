@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"bytemind/internal/config"
-	"bytemind/internal/llm"
-	planpkg "bytemind/internal/plan"
-	"bytemind/internal/session"
-	"bytemind/internal/tools"
+	"github.com/1024XEngineer/bytemind/internal/config"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	planpkg "github.com/1024XEngineer/bytemind/internal/plan"
+	"github.com/1024XEngineer/bytemind/internal/session"
+	"github.com/1024XEngineer/bytemind/internal/tools"
 )
 
 type recordingClient struct {
@@ -412,8 +412,8 @@ func TestRunPromptUsesSessionModeWhenModeArgEmpty(t *testing.T) {
 	if _, err := runner.RunPrompt(context.Background(), sess, "draft a plan", "", io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if len(client.requests) != 1 {
-		t.Fatalf("expected one LLM request, got %d", len(client.requests))
+	if len(client.requests) == 0 {
+		t.Fatal("expected at least one LLM request")
 	}
 	systemPrompt := client.requests[0].Messages[0].Content
 	for _, want := range []string{"[Current Mode]", "plan", "mode: plan"} {

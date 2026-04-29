@@ -3,26 +3,33 @@ package agent
 import (
 	"strings"
 
-	"bytemind/internal/llm"
-	planpkg "bytemind/internal/plan"
-	"bytemind/internal/session"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	planpkg "github.com/1024XEngineer/bytemind/internal/plan"
+	"github.com/1024XEngineer/bytemind/internal/session"
 )
 
 type runPromptSetup struct {
-	Input                RunPromptInput
-	UserInput            string
-	RunMode              planpkg.AgentMode
-	Mode                 string
-	ActiveSkill          *activeSkillRuntime
-	AllowedTools         map[string]struct{}
-	DeniedTools          map[string]struct{}
-	AllowedToolNames     []string
-	DeniedToolNames      []string
-	AvailableSkills      []PromptSkill
-	AvailableTools       []string
-	InstructionText      string
-	WebLookupInstruction string
-	PromptTokens         int
+	Input                        RunPromptInput
+	UserInput                    string
+	RunMode                      planpkg.AgentMode
+	Mode                         string
+	SystemSandboxBackend         string
+	SystemSandboxRequiredCapable bool
+	SystemSandboxCapabilityLevel string
+	SystemSandboxShellNetwork    bool
+	SystemSandboxWorkerNetwork   bool
+	SystemSandboxFallback        bool
+	SystemSandboxStatus          string
+	ActiveSkill                  *activeSkillRuntime
+	AllowedTools                 map[string]struct{}
+	DeniedTools                  map[string]struct{}
+	AllowedToolNames             []string
+	DeniedToolNames              []string
+	AvailableSkills              []PromptSkill
+	AvailableTools               []string
+	InstructionText              string
+	WebLookupInstruction         string
+	PromptTokens                 int
 }
 
 func (r *Runner) prepareRunPrompt(sess *session.Session, input RunPromptInput, mode string) (runPromptSetup, error) {

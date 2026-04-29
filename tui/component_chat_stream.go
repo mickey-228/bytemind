@@ -2,9 +2,21 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
+
+	planpkg "github.com/1024XEngineer/bytemind/internal/plan"
 )
+
+var streamTurnIntentTagPattern = regexp.MustCompile(`(?is)<turn_intent>\s*[a-z_]*\s*</turn_intent>|</?turn_intent>\s*`)
+
+func stripStreamControlTags(delta string) string {
+	if strings.TrimSpace(delta) == "" {
+		return delta
+	}
+	return streamTurnIntentTagPattern.ReplaceAllString(delta, "")
+}
 
 func (m model) shouldKeepStreamingIndexOnRunFinished() bool {
 	if m.streamingIndex < 0 || m.streamingIndex >= len(m.chatItems) {
@@ -19,6 +31,7 @@ func (m model) shouldKeepStreamingIndexOnRunFinished() bool {
 }
 
 func (m *model) appendAssistantDelta(delta string) {
+	delta = stripStreamControlTags(delta)
 	if delta == "" {
 		return
 	}
@@ -67,6 +80,14 @@ func (m *model) finishAssistantMessage(content string) {
 		return
 	}
 	finalContent := m.decorateFinalAnswer(content)
+	if m.mode == modePlan {
+		if planpkg.HasActiveChoice(m.plan) {
+			finalContent = stripClarifyChoiceBlockFromAnswer(finalContent)
+		}
+		if planpkg.CanStartExecution(m.plan) {
+			finalContent = stripPlanActionTailFromAnswer(finalContent)
+		}
+	}
 
 	if m.streamingIndex >= 0 && m.streamingIndex < len(m.chatItems) {
 		current := &m.chatItems[m.streamingIndex]
@@ -181,7 +202,7 @@ func (m *model) populateLatestThinkingToolStep(toolName, summary, status string)
 }
 
 func (m *model) finishLatestToolCall(name, body, status string) {
-	title := "Tool Call | " + name
+	title := toolEntryTitle(name)
 	for i := len(m.chatItems) - 1; i >= 0; i-- {
 		if m.chatItems[i].Kind != "tool" {
 			continue

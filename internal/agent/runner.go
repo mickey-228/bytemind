@@ -6,17 +6,18 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
-	"bytemind/internal/config"
-	extensionspkg "bytemind/internal/extensions"
-	"bytemind/internal/llm"
-	"bytemind/internal/provider"
-	runtimepkg "bytemind/internal/runtime"
-	"bytemind/internal/session"
-	"bytemind/internal/skills"
-	storagepkg "bytemind/internal/storage"
-	"bytemind/internal/tokenusage"
-	"bytemind/internal/tools"
+	"github.com/1024XEngineer/bytemind/internal/config"
+	extensionspkg "github.com/1024XEngineer/bytemind/internal/extensions"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	"github.com/1024XEngineer/bytemind/internal/provider"
+	runtimepkg "github.com/1024XEngineer/bytemind/internal/runtime"
+	"github.com/1024XEngineer/bytemind/internal/session"
+	"github.com/1024XEngineer/bytemind/internal/skills"
+	storagepkg "github.com/1024XEngineer/bytemind/internal/storage"
+	"github.com/1024XEngineer/bytemind/internal/tokenusage"
+	"github.com/1024XEngineer/bytemind/internal/tools"
 )
 
 const (
@@ -91,6 +92,13 @@ type Runner struct {
 	bridgeSessions      map[string]bridgeSessionState
 	bridgeSessionTurns  map[string]int
 	bridgeToolRefCounts map[string]int
+
+	extensionSyncMu    sync.Mutex
+	extensionSyncTTL   time.Duration
+	extensionSyncAt    time.Time
+	extensionSyncDirty bool
+	extensionSyncGen   uint64
+	extensionToolKeys  map[string]map[string]struct{}
 }
 
 func NewRunner(opts Options) *Runner {
@@ -137,6 +145,10 @@ func NewRunner(opts Options) *Runner {
 	if extensions == nil {
 		extensions = extensionspkg.NopManager{}
 	}
+	extensionSyncTTL := time.Duration(cfg.MCP.SyncTTLSeconds) * time.Second
+	if extensionSyncTTL <= 0 {
+		extensionSyncTTL = 30 * time.Second
+	}
 	client := opts.Client
 	if client != nil {
 		client = routeAwareClient{base: client}
@@ -160,6 +172,10 @@ func NewRunner(opts Options) *Runner {
 		approval:      opts.Approval,
 		stdin:         opts.Stdin,
 		stdout:        opts.Stdout,
+
+		extensionSyncTTL:   extensionSyncTTL,
+		extensionSyncDirty: true,
+		extensionToolKeys:  map[string]map[string]struct{}{},
 	}
 
 	engine := opts.Engine

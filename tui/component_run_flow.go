@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"bytemind/internal/history"
-	"bytemind/internal/llm"
-	planpkg "bytemind/internal/plan"
+	"github.com/1024XEngineer/bytemind/internal/history"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	planpkg "github.com/1024XEngineer/bytemind/internal/plan"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -22,7 +22,6 @@ func (m *model) beginRun(prompt, mode, note string) tea.Cmd {
 }
 
 func (m *model) beginRunWithInput(promptInput RunPromptInput, mode, note string) tea.Cmd {
-	m.installApprovalBridge()
 	runCtx, cancel := context.WithCancel(context.Background())
 	m.runSeq++
 	runID := m.runSeq
@@ -37,6 +36,8 @@ func (m *model) beginRunWithInput(promptInput RunPromptInput, mode, note string)
 	m.llmConnected = true
 	m.busy = true
 	m.runStartedAt = time.Now()
+	m.lastRunDuration = 0
+	m.runIndicatorState = runIndicatorRunning
 	m.chatAutoFollow = true
 	spinnerTick := m.resetThinkingSpinner()
 	m.ensureThinkingCard()
@@ -53,7 +54,14 @@ func (m model) submitPrompt(value string) (tea.Model, tea.Cmd) {
 		m.statusNote = err.Error()
 		return m, nil
 	}
+	return m.submitPreparedPrompt(promptInput, displayText)
+}
 
+func (m model) submitPreparedPrompt(promptInput RunPromptInput, displayText string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(promptInput.DisplayText) == "" && strings.TrimSpace(displayText) != "" {
+		promptInput.DisplayText = displayText
+	}
+	m.closePlanActionPicker()
 	m.input.Reset()
 	m.clearPasteTransaction()
 	m.clearVirtualPasteParts()
@@ -164,7 +172,7 @@ func (m *model) handleAgentEvent(event Event) {
 		m.populateLatestThinkingToolStep(event.ToolName, "", "running")
 		m.appendChat(chatEntry{
 			Kind:   "tool",
-			Title:  "Tool Call | " + event.ToolName,
+			Title:  toolEntryTitle(event.ToolName),
 			Body:   "",
 			Status: "running",
 		})
@@ -197,16 +205,34 @@ func (m *model) handleAgentEvent(event Event) {
 		if m.phase == "none" {
 			m.phase = "plan"
 		}
-		m.statusNote = fmt.Sprintf("Plan updated with %d step(s).", len(m.plan.Steps))
+		switch {
+		case planpkg.HasActiveChoice(m.plan):
+			m.statusNote = "Plan updated. A clarification choice will appear after this reply finishes."
+		case canContinuePlan(m.plan):
+			m.statusNote = "Plan converged. Review the full plan, then choose the next action from the picker."
+		case len(m.plan.DecisionGaps) > 0:
+			m.statusNote = fmt.Sprintf("Plan updated. %d decision gap(s) remain.", len(m.plan.DecisionGaps))
+		default:
+			m.statusNote = fmt.Sprintf("Plan updated with %d step(s).", len(m.plan.Steps))
+		}
+		if !hasRenderablePlanAction(m.plan) || m.busy {
+			m.closePlanActionPicker()
+		} else {
+			m.syncPlanActionPicker()
+		}
 	case EventUsageUpdated:
 		m.applyUsage(event.Usage)
 	case EventRunFinished:
-		if note, ok := m.latestPendingApprovalStatusNote(); ok {
-			m.statusNote = note
-		} else if strings.TrimSpace(event.Content) != "" {
+		if strings.TrimSpace(event.Content) != "" {
 			m.statusNote = "Run finished."
 		}
 		m.phase = "idle"
+		if m.mode == modePlan && hasRenderablePlanAction(m.plan) {
+			m.syncPlanActionPicker()
+			m.statusNote = planActionStatusNote(m.plan)
+		} else {
+			m.closePlanActionPicker()
+		}
 	}
 }
 

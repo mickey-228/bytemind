@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	corepkg "bytemind/internal/core"
+	corepkg "github.com/1024XEngineer/bytemind/internal/core"
 )
 
 // Engine executes one turn and emits turn-scoped events.
@@ -69,6 +69,16 @@ func (e *defaultEngine) HandleTurn(ctx context.Context, req TurnRequest) (<-chan
 			return
 		}
 		defer e.runner.clearSessionSkillBridges(req.Session)
+		if err := e.runner.syncExtensionTools(runCtx, false); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				_ = stream.Emit(TurnEvent{
+					Type:      TurnEventError,
+					Error:     err,
+					ErrorCode: "extensions_sync_timeout",
+				})
+				return
+			}
+		}
 
 		setup, err := e.prepareRunPrompt(req.Session, req.Input, req.Mode)
 		if err != nil {

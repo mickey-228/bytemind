@@ -4,11 +4,12 @@ import (
 	"context"
 	"io"
 
-	"bytemind/internal/config"
-	"bytemind/internal/llm"
-	planpkg "bytemind/internal/plan"
-	"bytemind/internal/session"
-	"bytemind/internal/skills"
+	"github.com/1024XEngineer/bytemind/internal/config"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	"github.com/1024XEngineer/bytemind/internal/mcpctl"
+	planpkg "github.com/1024XEngineer/bytemind/internal/plan"
+	"github.com/1024XEngineer/bytemind/internal/session"
+	"github.com/1024XEngineer/bytemind/internal/skills"
 )
 
 type EventType string
@@ -38,11 +39,43 @@ type Event struct {
 }
 
 type ApprovalRequest struct {
-	Command string
-	Reason  string
+	ToolName string
+	Command  string
+	Reason   string
 }
 
-type ApprovalHandler func(ApprovalRequest) (bool, error)
+type ApprovalDisposition string
+
+const (
+	ApprovalApproveOnce            ApprovalDisposition = "approve_once"
+	ApprovalApproveSameToolSession ApprovalDisposition = "approve_same_tool_session"
+	ApprovalApproveAllSession      ApprovalDisposition = "approve_all_session"
+	ApprovalDeny                   ApprovalDisposition = "deny"
+)
+
+type ApprovalDecision struct {
+	Disposition ApprovalDisposition
+}
+
+func (d ApprovalDecision) Approved() bool {
+	switch d.Disposition {
+	case ApprovalApproveOnce, ApprovalApproveSameToolSession, ApprovalApproveAllSession:
+		return true
+	default:
+		return false
+	}
+}
+
+func NormalizeApprovalDecision(d ApprovalDecision) ApprovalDecision {
+	switch d.Disposition {
+	case ApprovalApproveOnce, ApprovalApproveSameToolSession, ApprovalApproveAllSession, ApprovalDeny:
+		return d
+	default:
+		return ApprovalDecision{Disposition: ApprovalDeny}
+	}
+}
+
+type ApprovalHandler func(ApprovalRequest) (ApprovalDecision, error)
 
 type Observer func(Event)
 
@@ -70,4 +103,14 @@ type SessionStore interface {
 	List(limit int) ([]session.Summary, []string, error)
 	DeleteInWorkspace(workspace, id string) error
 	CleanupZeroMessageSessions(workspace, activeSessionID string) (session.CleanupResult, error)
+}
+
+type MCPService interface {
+	List(ctx context.Context) ([]mcpctl.ServerStatus, error)
+	Show(ctx context.Context, serverID string) (mcpctl.ServerDetail, error)
+	Add(ctx context.Context, req mcpctl.AddRequest) (mcpctl.ServerStatus, error)
+	Remove(ctx context.Context, serverID string) error
+	Enable(ctx context.Context, serverID string, enabled bool) (mcpctl.ServerStatus, error)
+	Test(ctx context.Context, serverID string) (mcpctl.ServerStatus, error)
+	Reload(ctx context.Context) error
 }

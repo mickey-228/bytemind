@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"bytemind/internal/assets"
-	corepkg "bytemind/internal/core"
-	"bytemind/internal/llm"
-	"bytemind/internal/session"
+	"github.com/1024XEngineer/bytemind/internal/assets"
+	corepkg "github.com/1024XEngineer/bytemind/internal/core"
+	"github.com/1024XEngineer/bytemind/internal/llm"
+	"github.com/1024XEngineer/bytemind/internal/session"
 
 	"github.com/charmbracelet/bubbles/textarea"
 )
@@ -28,6 +28,19 @@ type fakeClipboardImageReader struct {
 
 func (f fakeClipboardImageReader) ReadImage(context.Context) (string, []byte, string, error) {
 	return f.mediaType, f.data, f.fileName, f.err
+}
+
+type fakeClipboardTextReader struct {
+	text string
+	err  error
+	calls *int
+}
+
+func (f fakeClipboardTextReader) ReadText(context.Context) (string, error) {
+	if f.calls != nil {
+		*f.calls++
+	}
+	return f.text, f.err
 }
 
 func newImagePipelineModel(t *testing.T) *model {
@@ -398,6 +411,14 @@ func TestClassifyInputMutationDetectsCtrlVPasteEmpty(t *testing.T) {
 	class, _, _, _ := classifyInputMutation("unchanged", "unchanged", "ctrl+v")
 	if class != inputMutationPasteEmpty {
 		t.Fatalf("expected ctrl+v empty paste classification, got %q", class)
+	}
+}
+
+func TestClassifyInputMutationTreatsPlainRuneChunkAsOrdinary(t *testing.T) {
+	inserted := "这是一次输入法上屏后的长文本片段"
+	class, _, _, _ := classifyInputMutation("", inserted, inserted)
+	if class != inputMutationOrdinary {
+		t.Fatalf("expected plain rune chunk classification, got %q", class)
 	}
 }
 

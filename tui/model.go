@@ -169,8 +169,8 @@ type approvalPrompt struct {
 	Reason   string
 	Cursor   int
 	Reply    chan approvalDecision
-	Kind    string
-	Choice  int
+	Kind     string
+	Choice   int
 }
 
 type approvalDecision struct {
@@ -837,8 +837,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Reason:   msg.Request.Reason,
 			Cursor:   0,
 			Reply:    msg.Reply,
-			Kind:    approvalPromptKindTool,
-			Choice:  approvalChoiceApprove,
+			Kind:     approvalPromptKindTool,
+			Choice:   approvalChoiceApprove,
 		}
 		m.statusNote = "Approval required."
 		m.phase = "approval"
@@ -2878,6 +2878,10 @@ func (m model) autoFollowLabel() string {
 
 func (m model) currentModelLabel() string {
 	if model := strings.TrimSpace(m.cfg.Provider.Model); model != "" {
+		lower := strings.ToLower(model)
+		if strings.HasSuffix(lower, " (bytemind)") {
+			return strings.TrimSpace(strings.TrimSuffix(lower, " (bytemind)"))
+		}
 		return model
 	}
 	return "-"

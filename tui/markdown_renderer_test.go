@@ -198,6 +198,69 @@ func TestRenderStructuredMarkdownPreparedStylesToolSurfaceAndCopy(t *testing.T) 
 	}
 }
 
+func TestRenderStructuredMarkdownPreparedGroupsDirectoryTreeParagraphsIntoSingleCodeBlock(t *testing.T) {
+	input := strings.Join([]string{
+		"`C:\\Users\\ASUS\\source\\repos\\我的改错作业\\`",
+		"",
+		"`├─ 我的改错作业.sln`",
+		"",
+		"`├─ x64\\`",
+		"",
+		"`│  └─ Debug\\`",
+		"",
+		"`└─ 我的改错作业\\`",
+	}, "\n")
+
+	result, err := renderStructuredMarkdownPrepared(markdownSurfaceAssistant, input, 88)
+	if err != nil {
+		t.Fatalf("renderStructuredMarkdownPrepared: %v", err)
+	}
+
+	if strings.Count(result.Copy, "[text]") != 1 {
+		t.Fatalf("expected one merged code block badge, got copy=%q", result.Copy)
+	}
+	for _, want := range []string{
+		"C:\\Users\\ASUS\\source\\repos\\我的改错作业\\",
+		"├─ 我的改错作业.sln",
+		"│  └─ Debug\\",
+		"└─ 我的改错作业\\",
+	} {
+		if !strings.Contains(result.Copy, want) {
+			t.Fatalf("expected merged tree code block to contain %q, got %q", want, result.Copy)
+		}
+	}
+}
+
+func TestPrepareMarkdownInputCollapsesInlineCodeTreeLinesToSingleFencedBlock(t *testing.T) {
+	input := strings.Join([]string{
+		"项目目录结构如下：",
+		"",
+		"`C:\\Users\\ASUS\\source\\repos\\我的改错作业\\`",
+		"",
+		"`├─ 我的改错作业.sln`",
+		"`├─ x64\\Debug\\`",
+		"`└─ 我的改错作业所有\\`",
+	}, "\n")
+
+	prepared := prepareMarkdownInput(markdownSurfaceAssistant, input)
+	if strings.Count(prepared, "```text") != 1 {
+		t.Fatalf("expected one fenced text block, got %q", prepared)
+	}
+	if strings.Count(prepared, "```") < 2 {
+		t.Fatalf("expected fenced block markers, got %q", prepared)
+	}
+	for _, want := range []string{
+		"C:\\Users\\ASUS\\source\\repos\\我的改错作业\\",
+		"├─ 我的改错作业.sln",
+		"├─ x64\\Debug\\",
+		"└─ 我的改错作业所有\\",
+	} {
+		if !strings.Contains(prepared, want) {
+			t.Fatalf("expected prepared markdown to contain %q, got %q", want, prepared)
+		}
+	}
+}
+
 func TestFormatChatCopyBodyUsesPlainToolMarkdownCopy(t *testing.T) {
 	item := chatEntry{
 		Kind: "tool",

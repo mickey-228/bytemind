@@ -39,10 +39,11 @@ func TestSemanticIntentDoesNotMisclassifyPlainText(t *testing.T) {
 	}
 }
 
-func TestRenderMarkdownHeadingAddsVisualPrefixes(t *testing.T) {
+func TestRenderMarkdownHeadingUsesMinimalHeadingText(t *testing.T) {
 	got := renderMarkdownHeading("## Section", 40)
-	if !strings.Contains(got, "\u25c6 Section") {
-		t.Fatalf("expected heading prefix in rendered heading, got %q", got)
+	plain := stripANSI(got)
+	if plain != "Section" {
+		t.Fatalf("expected minimal heading rendering without visual prefix, got %q", plain)
 	}
 }
 

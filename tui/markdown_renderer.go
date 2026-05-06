@@ -370,11 +370,73 @@ func prepareMarkdownInput(surface markdownSurface, text string) string {
 	text = strings.ReplaceAll(text, "\t", "    ")
 	if surface == markdownSurfaceAssistant {
 		text = tidyAssistantSpacing(text)
+		text = collapseInlineCodeTreeLinesToFencedBlock(text)
 	}
 	if strings.Count(text, "\n```")%2 == 1 || strings.HasPrefix(strings.TrimSpace(text), "```") && strings.Count(text, "```")%2 == 1 {
 		text += "\n```"
 	}
 	return text
+}
+
+func collapseInlineCodeTreeLinesToFencedBlock(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); {
+		line := strings.TrimSpace(lines[i])
+		if !isInlineCodeWrappedLine(line) {
+			out = append(out, lines[i])
+			i++
+			continue
+		}
+
+		candidate := make([]string, 0, 8)
+		j := i
+		for j < len(lines) {
+			current := strings.TrimSpace(lines[j])
+			if current == "" {
+				j++
+				continue
+			}
+			if !isInlineCodeWrappedLine(current) {
+				break
+			}
+			unwrapped := strings.TrimSpace(strings.Trim(current, "`"))
+			candidate = append(candidate, unwrapped)
+			j++
+		}
+
+		if len(candidate) >= 2 && mostlyLooksLikeDirectoryTree(candidate) {
+			out = append(out, "```text")
+			out = append(out, candidate...)
+			out = append(out, "```")
+			i = j
+			continue
+		}
+
+		out = append(out, lines[i])
+		i++
+	}
+	return strings.Join(out, "\n")
+}
+
+func isInlineCodeWrappedLine(line string) bool {
+	if line == "" {
+		return false
+	}
+	return strings.HasPrefix(line, "`") && strings.HasSuffix(line, "`") && len(line) >= 2
+}
+
+func mostlyLooksLikeDirectoryTree(lines []string) bool {
+	if len(lines) == 0 {
+		return false
+	}
+	matchCount := 0
+	for _, line := range lines {
+		if looksLikeDirectoryTreeLine(line) {
+			matchCount++
+		}
+	}
+	return matchCount >= 2
 }
 
 func markdownCacheKey(surface markdownSurface, text string, width int, profile string) string {
@@ -706,6 +768,7 @@ func trimLeadingTextFromSpans(spans []markdownSpan, n int) []markdownSpan {
 }
 
 func renderMarkdownBlocks(surface markdownSurface, blocks []markdownBlock, width int) []markdownRenderLine {
+	blocks = normalizeMarkdownBlocksForDisplay(surface, blocks)
 	lines := make([]markdownRenderLine, 0, len(blocks)*3)
 	for i, block := range blocks {
 		if i > 0 && shouldSeparateMarkdownBlocks(blocks[i-1], block) {
@@ -714,6 +777,80 @@ func renderMarkdownBlocks(surface markdownSurface, blocks []markdownBlock, width
 		lines = append(lines, renderMarkdownBlock(surface, block, width)...)
 	}
 	return trimMarkdownBlankLines(lines)
+}
+
+func normalizeMarkdownBlocksForDisplay(surface markdownSurface, blocks []markdownBlock) []markdownBlock {
+	if surface != markdownSurfaceAssistant || len(blocks) == 0 {
+		return blocks
+	}
+	normalized := make([]markdownBlock, 0, len(blocks))
+	for i := 0; i < len(blocks); {
+		if blocks[i].Kind != markdownBlockParagraph {
+			normalized = append(normalized, blocks[i])
+			i++
+			continue
+		}
+
+		firstLine := strings.TrimSpace(plainTextFromSpans(blocks[i].Spans))
+		if !looksLikeDirectoryTreeLine(firstLine) {
+			normalized = append(normalized, blocks[i])
+			i++
+			continue
+		}
+
+		treeLines := []string{firstLine}
+		j := i + 1
+		for j < len(blocks) && blocks[j].Kind == markdownBlockParagraph {
+			nextLine := strings.TrimSpace(plainTextFromSpans(blocks[j].Spans))
+			if !looksLikeDirectoryTreeLine(nextLine) {
+				break
+			}
+			treeLines = append(treeLines, nextLine)
+			j++
+		}
+
+		if len(treeLines) >= 2 {
+			normalized = append(normalized, markdownBlock{
+				Kind: markdownBlockCode,
+				Code: markdownCodeBlock{
+					Language: "text",
+					Text:     strings.Join(treeLines, "\n"),
+				},
+			})
+			i = j
+			continue
+		}
+
+		normalized = append(normalized, blocks[i])
+		i++
+	}
+	return normalized
+}
+
+func looksLikeDirectoryTreeLine(text string) bool {
+	if text == "" {
+		return false
+	}
+	if strings.HasPrefix(text, "`") && strings.HasSuffix(text, "`") && len(text) >= 2 {
+		text = strings.TrimSpace(strings.Trim(text, "`"))
+	}
+	if text == "" {
+		return false
+	}
+
+	looksLikePath := strings.HasPrefix(text, "C:\\") ||
+		strings.HasPrefix(text, ".\\") ||
+		strings.HasPrefix(text, "..\\") ||
+		strings.HasPrefix(text, "/") ||
+		strings.HasPrefix(text, "~/")
+	looksLikeTree := strings.ContainsAny(text, "├└│─")
+	looksLikeFileLine := strings.Contains(text, ".sln") ||
+		strings.Contains(text, ".vcxproj") ||
+		strings.Contains(text, ".exe") ||
+		strings.Contains(text, ".pdb") ||
+		strings.Contains(text, "\\")
+
+	return looksLikePath || looksLikeTree || looksLikeFileLine
 }
 
 func shouldSeparateMarkdownBlocks(prev, next markdownBlock) bool {

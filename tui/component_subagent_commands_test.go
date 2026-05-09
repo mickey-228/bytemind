@@ -13,6 +13,7 @@ import (
 	"github.com/1024XEngineer/bytemind/internal/agent"
 	"github.com/1024XEngineer/bytemind/internal/config"
 	"github.com/1024XEngineer/bytemind/internal/llm"
+	"github.com/1024XEngineer/bytemind/internal/provider"
 	"github.com/1024XEngineer/bytemind/internal/session"
 	"github.com/1024XEngineer/bytemind/internal/skills"
 	subagentspkg "github.com/1024XEngineer/bytemind/internal/subagents"
@@ -26,6 +27,12 @@ type subAgentCommandRunnerStub struct {
 	builtinAgent subagentspkg.Agent
 	builtinOK    bool
 	lastRequest  tools.DelegateSubAgentRequest
+	models       []provider.ModelInfo
+	warnings     []provider.Warning
+	modelsErr    error
+	runtimeCfg   config.ProviderRuntimeConfig
+	providerCfg  config.ProviderConfig
+	client       llm.Client
 }
 
 func (s *subAgentCommandRunnerStub) RunPromptWithInput(context.Context, *session.Session, RunPromptInput, string, io.Writer) (string, error) {
@@ -37,6 +44,12 @@ func (s *subAgentCommandRunnerStub) SetObserver(Observer) {}
 func (s *subAgentCommandRunnerStub) SetApprovalHandler(ApprovalHandler) {}
 
 func (s *subAgentCommandRunnerStub) UpdateProvider(config.ProviderConfig, llm.Client) {}
+
+func (s *subAgentCommandRunnerStub) UpdateProviderRuntime(runtimeCfg config.ProviderRuntimeConfig, providerCfg config.ProviderConfig, client llm.Client) {
+	s.runtimeCfg = runtimeCfg
+	s.providerCfg = providerCfg
+	s.client = client
+}
 
 func (s *subAgentCommandRunnerStub) ListSkills() ([]skills.Skill, []skills.Diagnostic) {
 	return nil, nil
@@ -56,6 +69,10 @@ func (s *subAgentCommandRunnerStub) ClearActiveSkill(*session.Session) error {
 
 func (s *subAgentCommandRunnerStub) ClearSkill(string) (skills.ClearResult, error) {
 	return skills.ClearResult{}, nil
+}
+
+func (s *subAgentCommandRunnerStub) ListModels(context.Context) ([]provider.ModelInfo, []provider.Warning, error) {
+	return s.models, s.warnings, s.modelsErr
 }
 
 func (s *subAgentCommandRunnerStub) ListSubAgents() ([]subagentspkg.Agent, []subagentspkg.Diagnostic) {
@@ -473,6 +490,46 @@ func TestCommandPaletteSelectExplorerPrefillsCommand(t *testing.T) {
 	}
 	if updated.input.Value() != "/explorer" {
 		t.Fatalf("expected /explorer usage to be inserted, got %q", updated.input.Value())
+	}
+}
+
+func TestCommandPaletteEnterOnModelOpensPicker(t *testing.T) {
+	input := textarea.New()
+	input.SetValue("/model picker")
+	m := model{
+		screen:      screenChat,
+		commandOpen: true,
+		input:       input,
+		runner: &subAgentCommandRunnerStub{
+			models: []provider.ModelInfo{
+				{ProviderID: "openai", ModelID: "gpt-5.4"},
+				{ProviderID: "deepseek", ModelID: "deepseek-chat"},
+			},
+		},
+		cfg: config.Config{
+			ProviderRuntime: config.ProviderRuntimeConfig{
+				DefaultProvider: "openai",
+				DefaultModel:    "gpt-5.4",
+				Providers: map[string]config.ProviderConfig{
+					"openai":   {Type: "openai-compatible", Model: "gpt-5.4"},
+					"deepseek": {Type: "openai-compatible", Model: "deepseek-chat"},
+				},
+			},
+		},
+	}
+	m.syncCommandPalette()
+
+	got, _ := m.handleCommandPaletteKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+
+	if updated.commandOpen {
+		t.Fatalf("expected command palette to close after opening model picker")
+	}
+	if !updated.modelsOpen {
+		t.Fatal("expected model picker to open")
+	}
+	if len(updated.chatItems) != 0 {
+		t.Fatalf("expected opening model picker not to append chat items, got %#v", updated.chatItems)
 	}
 }
 

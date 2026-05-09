@@ -509,6 +509,7 @@ func TestLoadUsesUserProviderWhenConfiguredThroughEnvKey(t *testing.T) {
 	workspace := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("BYTEMIND_HOME", home)
+	t.Setenv("BYTEMIND_API_KEY", "")
 	t.Setenv("DEEPSEEK_TEST_KEY", "env-user-key")
 
 	if err := writeConfig(filepath.Join(home, "config.json"), map[string]any{
@@ -549,6 +550,7 @@ func TestLoadUserProviderPrecedenceResetsProjectProviderRuntime(t *testing.T) {
 	workspace := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("BYTEMIND_HOME", home)
+	t.Setenv("BYTEMIND_API_KEY", "")
 
 	if err := writeConfig(filepath.Join(home, "config.json"), map[string]any{
 		"provider": map[string]any{

@@ -1344,8 +1344,8 @@ func renderTableBorderLine(widths []int, left, mid, right, leftCopy, midCopy, ri
 	displayParts := make([]string, len(widths))
 	copyParts := make([]string, len(widths))
 	for i, w := range widths {
-		displayParts[i] = strings.Repeat("─", w)
-		copyParts[i] = strings.Repeat("-", w)
+		displayParts[i] = strings.Repeat("─", w+2)
+		copyParts[i] = strings.Repeat("-", w+2)
 	}
 	return markdownRenderLine{
 		Display: markdownTableBorderStyle.Render(left + strings.Join(displayParts, markdownTableBorderStyle.Render(mid)) + right),
